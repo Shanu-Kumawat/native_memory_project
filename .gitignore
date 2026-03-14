@@ -1,0 +1,28 @@
+# Dependencies
+.dart_tool/
+.packages
+pubspec.lock
+
+# Build outputs
+build/
+*.exe
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Flutter/Dart
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SDK (don't track the full SDK checkout)
+sdk/
+devtools/
+
+# Gemini brain
+.gemini/

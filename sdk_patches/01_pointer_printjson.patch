@@ -1,0 +1,29 @@
+diff --git a/runtime/vm/object_service.cc b/runtime/vm/object_service.cc
+index e62706f4e05..1448e115fe4 100644
+--- a/runtime/vm/object_service.cc
++++ b/runtime/vm/object_service.cc
+@@ -1364,7 +1364,23 @@ void Instance::PrintSharedInstanceJSON(JSONObject* jsobj,
+ void Instance::PrintJSONImpl(JSONStream* stream, bool ref) const {
+   JSONObject jsobj(stream);
+   PrintSharedInstanceJSON(&jsobj, ref);
+-  jsobj.AddProperty("kind", "PlainInstance");
++
++  // Check if this is an FFI Pointer instance and emit enriched data.
++  if (IsPointer()) {
++    jsobj.AddProperty("kind", "Pointer");
++    const auto& pointer = Pointer::Cast(*this);
++    jsobj.AddProperty64("nativeAddress",
++                        static_cast<int64_t>(pointer.NativeAddress()));
++    // Emit the actual type argument (e.g., "MyStruct", "Int32")
++    // instead of the erased "Never" that runtimeType returns.
++    const AbstractType& type_arg =
++        AbstractType::Handle(pointer.type_argument());
++    if (!type_arg.IsNull()) {
++      jsobj.AddProperty("nativeType", type_arg);
++    }
++  } else {
++    jsobj.AddProperty("kind", "PlainInstance");
++  }
+ 
+   GrowableArray<Class*> classes;
+   Array& field_array = Array::Handle();

@@ -1,19 +1,35 @@
 diff --git a/runtime/vm/service.cc b/runtime/vm/service.cc
-index cda9becb14f..3ea8b408067 100644
+index cda9becb14f..e2e243ffb69 100644
 --- a/runtime/vm/service.cc
 +++ b/runtime/vm/service.cc
-@@ -6171,6 +6171,99 @@ static void GetDefaultClassesAliases(Thread* thread, JSONStream* js) {
+@@ -6171,6 +6171,157 @@ static void GetDefaultClassesAliases(Thread* thread, JSONStream* js) {
  #undef DEFINE_ADD_VALUE_F
  }
  
-+// ---------- readNativeMemory RPC (Linux only) ----------
++// ---------- readNativeMemory RPC (cross-platform) ----------
 +// Reads raw bytes from a native memory address using kernel-mediated
-+// safe reads (process_vm_readv). Returns -1 on invalid addresses instead
-+// of crashing the process.
++// safe reads. Each platform uses its own safe-read syscall that validates
++// the address range without triggering SIGSEGV/access violation.
++//
++// Platform details:
++//   Linux/Android: process_vm_readv(getpid(), ...) — reads from own process
++//   macOS/iOS:     mach_vm_read_overwrite(mach_task_self(), ...) — self-read
++//   Windows:       ReadProcessMemory(GetCurrentProcess(), ...) — self-read
++//
++// All approaches read from the SAME process:
++//   - No cross-process permissions needed
++//   - macOS SIP restrictions don't apply (mach_task_self() is always allowed)
++//   - Windows requires no elevated privileges
++//   - Kernel/OS validates addresses — no crash risk
 +
 +#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)
 +#include <sys/uio.h>   // for struct iovec, process_vm_readv
 +#include <unistd.h>    // for getpid
++#elif defined(DART_HOST_OS_MACOS)
++#include <mach/mach.h>     // for mach_task_self, kern_return_t
++#include <mach/mach_vm.h>  // for mach_vm_read_overwrite
++#elif defined(DART_HOST_OS_WINDOWS)
++#include <windows.h>    // for ReadProcessMemory, GetCurrentProcess
 +#endif
 +
 +static const MethodParameter* const read_native_memory_params[] = {
@@ -40,16 +56,18 @@ index cda9becb14f..3ea8b408067 100644
 +    return;
 +  }
 +
-+#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)
-+  // Use process_vm_readv with our own PID for safe, kernel-mediated reads.
-+  // The kernel validates the address range and returns -1 (EFAULT) for
-+  // invalid/unmapped addresses, instead of triggering SIGSEGV.
 +  uint8_t* buffer = reinterpret_cast<uint8_t*>(malloc(count));
 +  if (buffer == nullptr) {
 +    js->PrintError(kInternalError, "Failed to allocate read buffer");
 +    return;
 +  }
 +
++  ssize_t bytes_read = -1;
++
++#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)
++  // Linux/Android: process_vm_readv with our own PID.
++  // The kernel validates the address range and returns -1 (EFAULT) for
++  // invalid/unmapped addresses, instead of triggering SIGSEGV.
 +  struct iovec local_iov;
 +  local_iov.iov_base = buffer;
 +  local_iov.iov_len = count;
@@ -58,11 +76,61 @@ index cda9becb14f..3ea8b408067 100644
 +  remote_iov.iov_base = reinterpret_cast<void*>(address);
 +  remote_iov.iov_len = count;
 +
-+  ssize_t bytes_read = process_vm_readv(
++  bytes_read = process_vm_readv(
 +      getpid(),     // Read from our own process
 +      &local_iov, 1,
 +      &remote_iov, 1,
 +      0);
++
++#elif defined(DART_HOST_OS_MACOS)
++  // macOS/iOS: mach_vm_read_overwrite with mach_task_self().
++  // mach_task_self() returns the task port for the current process,
++  // which always has VM_PROT_READ permission on its own memory.
++  // SIP restrictions do not apply to self-targeted reads.
++  // Invalid addresses return KERN_INVALID_ADDRESS, no crash.
++  mach_vm_size_t bytes_read_mach = 0;
++  kern_return_t kr = mach_vm_read_overwrite(
++      mach_task_self(),                      // Our own task port
++      static_cast<mach_vm_address_t>(address),
++      static_cast<mach_vm_size_t>(count),
++      reinterpret_cast<mach_vm_address_t>(buffer),
++      &bytes_read_mach);
++
++  if (kr == KERN_SUCCESS) {
++    bytes_read = static_cast<ssize_t>(bytes_read_mach);
++  } else {
++    bytes_read = -1;
++  }
++
++#elif defined(DART_HOST_OS_WINDOWS)
++  // Windows: ReadProcessMemory with GetCurrentProcess().
++  // GetCurrentProcess() returns a pseudo-handle that always has
++  // PROCESS_VM_READ access to the current process's memory.
++  // Invalid addresses return FALSE and GetLastError() == ERROR_PARTIAL_COPY
++  // or ERROR_NOACCESS, no crash/exception.
++  SIZE_T bytes_read_win = 0;
++  BOOL ok = ReadProcessMemory(
++      GetCurrentProcess(),                     // Our own process handle
++      reinterpret_cast<LPCVOID>(address),
++      buffer,
++      static_cast<SIZE_T>(count),
++      &bytes_read_win);
++
++  if (ok) {
++    bytes_read = static_cast<ssize_t>(bytes_read_win);
++  } else {
++    bytes_read = -1;
++  }
++
++#elif defined(DART_HOST_OS_FUCHSIA)
++  // Fuchsia: zx_process_read_memory with zx_process_self().
++  // Not yet implemented — Fuchsia support is a stretch goal.
++  bytes_read = -1;
++
++#else
++  // Unknown platform.
++  bytes_read = -1;
++#endif
 +
 +  if (bytes_read < 0) {
 +    free(buffer);
@@ -73,15 +141,12 @@ index cda9becb14f..3ea8b408067 100644
 +    return;
 +  }
 +
-+  // Build the JSON response with base64-encoded bytes.
++  // Build the JSON response with bytes as an integer array.
 +  JSONObject response(js);
 +  response.AddProperty("type", "NativeMemory");
 +  response.AddProperty64("address", static_cast<int64_t>(address));
 +  response.AddProperty64("count", static_cast<int64_t>(bytes_read));
 +
-+  // Emit bytes as a JSON array of integers (0-255).
-+  // For larger reads, base64 encoding would be more efficient,
-+  // but raw bytes are easier for the sample project to consume.
 +  {
 +    JSONArray bytes_array(&response, "bytes");
 +    for (ssize_t i = 0; i < bytes_read; i++) {
@@ -90,19 +155,12 @@ index cda9becb14f..3ea8b408067 100644
 +  }
 +
 +  free(buffer);
-+
-+#else
-+  // Unsupported platform — return an error indicating Linux is required.
-+  js->PrintError(kFeatureDisabled,
-+                 "readNativeMemory is only supported on Linux and Android. "
-+                 "Current platform does not support process_vm_readv.");
-+#endif  // DART_HOST_OS_LINUX || DART_HOST_OS_ANDROID
 +}
 +
  // clang-format off
  static const ServiceMethodDescriptor service_methods_[] = {
    { "_echo", Echo,
-@@ -6338,6 +6431,8 @@ static const ServiceMethodDescriptor service_methods_[] = {
+@@ -6338,6 +6489,8 @@ static const ServiceMethodDescriptor service_methods_[] = {
      collect_all_garbage_params },
    { "_getDefaultClassesAliases", GetDefaultClassesAliases,
      get_default_classes_aliases_params },

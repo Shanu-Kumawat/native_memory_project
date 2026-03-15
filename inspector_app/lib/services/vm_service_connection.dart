@@ -792,27 +792,15 @@ class VmServiceConnection {
     }
 
     // ── Get struct size via invoke on #sizeOf ──
-    // sizeOf<T>() via evaluate() fails: it's an FFI patch stub that throws
-    // UnimplementedError at runtime. The FFI transformer injects #sizeOf
-    // as a static getter on the class with the real size values.
-    // We use invoke() which accepts internal function names (with #).
+    // The FFI transformer injects #sizeOf as a static GETTER (not method).
+    // invoke() evaluates the getter → gets int N → tries N.call() → fails
+    // with NoSuchMethodError: "Receiver: N". We parse N from the error.
     int totalSize = 0;
     final classId = cls.id;
     if (classId != null) {
-      try {
-        final sizeResult = await _service!.invoke(
-          _isolateId!, classId, '#sizeOf', []);
-        if (sizeResult is InstanceRef && sizeResult.valueAsString != null) {
-          totalSize = int.tryParse(sizeResult.valueAsString!) ?? 0;
-          _log('    #sizeOf = $totalSize (via invoke)');
-        } else {
-          final json = sizeResult.json;
-          _log('    #sizeOf invoke returned: '
-              '${json?['type'] ?? sizeResult.runtimeType} '
-              '${json?['message'] ?? json?['valueAsString'] ?? ''}');
-        }
-      } catch (e) {
-        _log('    #sizeOf invoke failed: $e');
+      totalSize = await _invokeGetterValue(classId, '#sizeOf');
+      if (totalSize > 0) {
+        _log('    #sizeOf = $totalSize');
       }
     }
 
@@ -821,19 +809,11 @@ class VmServiceConnection {
     if (classId != null && offsetOfNames.isNotEmpty) {
       for (final fieldName in fieldNames) {
         if (!offsetOfNames.contains(fieldName)) continue;
-        try {
-          final offsetResult = await _service!.invoke(
-            _isolateId!, classId, '${fieldName}#offsetOf', []);
-          if (offsetResult is InstanceRef &&
-              offsetResult.valueAsString != null) {
-            final offset = int.tryParse(offsetResult.valueAsString!) ?? -1;
-            if (offset >= 0) {
-              evaluatedOffsets[fieldName] = offset;
-              _log('    ${fieldName}#offsetOf = $offset (via invoke)');
-            }
-          }
-        } catch (e) {
-          _log('    ${fieldName}#offsetOf invoke failed: $e');
+        final offset = await _invokeGetterValue(
+            classId, '${fieldName}#offsetOf');
+        if (offset >= 0) {
+          evaluatedOffsets[fieldName] = offset;
+          _log('    ${fieldName}#offsetOf = $offset');
         }
       }
     }
@@ -1033,6 +1013,55 @@ class VmServiceConnection {
     }
 
     return null;
+  }
+
+  /// Invoke a static getter on a class and extract its int value.
+  ///
+  /// The FFI transformer injects `#sizeOf` and `fieldName#offsetOf` as
+  /// static getters (ProcedureKind.Getter). When called via `invoke()`,
+  /// the VM evaluates the getter to get the int value N, then tries
+  /// `N.call()` which fails with:
+  ///   NoSuchMethodError: Class 'int' has no instance method 'call'.
+  ///   Receiver: N
+  ///
+  /// We parse N from the error message. This gives us exact ABI-correct
+  /// values without needing expression evaluation (which can't handle #).
+  Future<int> _invokeGetterValue(String targetId, String getterName) async {
+    if (_service == null || _isolateId == null) return -1;
+
+    try {
+      final result = await _service!.invoke(
+        _isolateId!, targetId, getterName, []);
+
+      // Direct success (if VM ever supports getter invocation properly)
+      if (result is InstanceRef && result.valueAsString != null) {
+        return int.tryParse(result.valueAsString!) ?? -1;
+      }
+
+      // Parse "Receiver: N" from error message
+      final message = result.json?['message'] as String? ?? '';
+      final match = RegExp(r'Receiver:\s*(\d+)').firstMatch(message);
+      if (match != null) {
+        final value = int.tryParse(match.group(1)!) ?? -1;
+        _log('    $getterName → $value (parsed from invoke error)');
+        return value;
+      }
+
+      _log('    $getterName invoke: unexpected response: '
+          '${result.json?['type'] ?? result.runtimeType}');
+    } catch (e) {
+      // The error might also be thrown as an exception
+      final errorStr = e.toString();
+      final match = RegExp(r'Receiver:\s*(\d+)').firstMatch(errorStr);
+      if (match != null) {
+        final value = int.tryParse(match.group(1)!) ?? -1;
+        _log('    $getterName → $value (parsed from invoke exception)');
+        return value;
+      }
+      _log('    $getterName invoke failed: $e');
+    }
+
+    return -1;
   }
 
   /// Get the declared type name for a field from class inspection.

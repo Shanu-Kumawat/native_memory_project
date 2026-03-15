@@ -694,6 +694,7 @@ class VmServiceConnection {
     final allFuncNames = <String>[];
     final offsetOfNames = <String>{};  // fields that have #offsetOf
     final setterNames = <String>{};    // fields that have setters
+    final getterFuncIds = <String, String>{}; // field name → func ID
 
     final functions = classJson?['functions'] as List?;
     if (functions != null) {
@@ -702,6 +703,7 @@ class VmServiceConnection {
       for (final funcEntry in functions) {
         if (funcEntry is Map) {
           final funcName = funcEntry['name'] as String? ?? '';
+          final funcId = funcEntry['id'] as String?;
           allFuncNames.add(funcName);
 
           // Detect #offsetOf entries: "id#offsetOf" → field "id"
@@ -716,6 +718,17 @@ class VmServiceConnection {
           if (funcName.endsWith('=') && !funcName.startsWith('_')) {
             final fieldName = funcName.substring(0, funcName.length - 1);
             setterNames.add(fieldName);
+          }
+
+          // Track getter function IDs for return type lookup
+          if (funcId != null &&
+              !funcName.startsWith('#') &&
+              !funcName.startsWith('_') &&
+              !funcName.endsWith('=') &&
+              !funcName.contains('#') &&
+              !funcName.contains('.') &&
+              funcName != className) {
+            getterFuncIds[funcName] = funcId;
           }
         }
       }
@@ -794,61 +807,105 @@ class VmServiceConnection {
       }
     }
 
-    // ── Evaluate #offsetOf for each field ──
-    final evaluatedOffsets = <String, int>{};
-    if (rootLibId != null && offsetOfNames.isNotEmpty) {
-      for (final fieldName in fieldNames) {
+    // ── Get field types from getter return types ──
+    // Since Class.fields may be empty (FFI transformer removes them),
+    // we get types from the getter function's return type.
+    final fieldTypes = <String, String>{};
+    for (final name in fieldNames) {
+      // First try Class.fields
+      String type = _getFieldDeclaredType(cls, name);
+      if (type != 'Unknown') {
+        fieldTypes[name] = type;
+        continue;
+      }
+
+      // Then try getter function return type
+      final funcId = getterFuncIds[name];
+      if (funcId != null) {
         try {
-          // The #offsetOf getter is a top-level-like function on the struct
-          // Try evaluating it via the class
-          final offsetExpr = '$className().${fieldName}';
-          // Actually, #offsetOf is a static getter, try direct evaluation
-          // The function name is "id#offsetOf" — we need to call it
-          // Try: evaluating the #offsetOf getter via the class library
-          final libId = cls.library?.id;
-          if (libId != null) {
-            final result = await _service!.evaluate(
-              _isolateId!, libId,
-              '${className}.#${fieldName}#offsetOf',
-            );
-            if (result is InstanceRef && result.valueAsString != null) {
-              final offset = int.tryParse(result.valueAsString!) ?? -1;
-              if (offset >= 0) {
-                evaluatedOffsets[fieldName] = offset;
-                _log('    $fieldName#offsetOf = $offset');
-              }
-            }
+          final func = await _service!.getObject(
+            _isolateId!, funcId) as Func;
+          final sig = func.signature;
+          final retType = sig?.returnType;
+          if (retType != null && retType.name != null) {
+            type = retType.name!;
+            _log('    getter $name() returns: $type');
+            fieldTypes[name] = type;
           }
         } catch (e) {
-          _log('    $fieldName#offsetOf eval failed: $e');
+          _log('    getter $name return type lookup failed: $e');
         }
       }
     }
+    _log('    Field types: $fieldTypes');
 
-    // ── Build field layout ──
+    // ── Build field layout with sizeOf reconciliation ──
+    // The Dart return types (int, double) are ambiguous w.r.t. FFI types:
+    //   int → Int8, Int16, Int32, Int64, Uint8, Uint16, Uint32, Uint64
+    //   double → Float, Double
+    // We use sizeOf<T>() to disambiguate by trying different type
+    // combinations and selecting the one that matches the total size.
+
+    // Build candidate type options for each field
+    final typeOptions = <List<({String typeName, int size})>>[];
+    for (final name in fieldNames) {
+      final rawType = fieldTypes[name] ?? 'Unknown';
+
+      // Generate candidate types for ambiguous Dart types
+      List<({String typeName, int size})> candidates;
+      if (rawType == 'int') {
+        candidates = [
+          (typeName: 'Int32', size: 4),
+          (typeName: 'Int64', size: 8),
+        ];
+      } else if (rawType == 'double') {
+        candidates = [
+          (typeName: 'Float', size: 4),
+          (typeName: 'Double', size: 8),
+        ];
+      } else {
+        final mapped = _mapToFfiType(rawType);
+        candidates = [mapped];
+      }
+
+      typeOptions.add(candidates);
+    }
+
+    // Try to find a type combination that matches sizeOf
+    List<StructField>? bestLayout;
+
+    if (totalSize > 0) {
+      bestLayout = _reconcileLayout(
+          fieldNames, typeOptions, totalSize, 0, []);
+    }
+
+    // If reconciliation found a match, use it
+    if (bestLayout != null) {
+      _log('    ✓ Reconciled layout with sizeOf=$totalSize');
+      for (final f in bestLayout) {
+        _log('      ${f.name}: ${f.typeName} '
+            'offset=${f.offset} size=${f.size}');
+      }
+      return (fields: bestLayout, totalSize: totalSize);
+    }
+
+    // Fallback: use default type mapping
+    _log('    Using default type mapping (no sizeOf match)');
     final fields = <StructField>[];
     int computedOffset = 0;
 
     for (int i = 0; i < fieldNames.length; i++) {
       final name = fieldNames[i];
-
-      // Get type from Class.fields declared type
-      String typeName = _getFieldDeclaredType(cls, name);
-      final mapped = _mapToFfiType(typeName);
-      typeName = mapped.typeName;
+      final rawType = fieldTypes[name] ?? 'Unknown';
+      final mapped = _mapToFfiType(rawType);
+      String typeName = mapped.typeName;
       int size = mapped.size;
 
-      // Use evaluated offset if available, otherwise compute
-      int offset;
-      if (evaluatedOffsets.containsKey(name)) {
-        offset = evaluatedOffsets[name]!;
-      } else {
-        // Compute with alignment
-        if (size > 0 && computedOffset % size != 0) {
-          computedOffset = ((computedOffset ~/ size) + 1) * size;
-        }
-        offset = computedOffset;
+      // Compute offset with ABI alignment
+      if (size > 0 && computedOffset % size != 0) {
+        computedOffset = ((computedOffset ~/ size) + 1) * size;
       }
+      int offset = computedOffset;
 
       fields.add(StructField(
         name: name,
@@ -860,12 +917,9 @@ class VmServiceConnection {
       computedOffset = offset + size;
     }
 
-    // Cross-check with sizeOf
     if (totalSize > 0 && computedOffset != totalSize) {
       _log('    ⚠ Size mismatch: computed=$computedOffset vs '
           'sizeOf=$totalSize');
-      // If we have a size mismatch but valid sizeOf, trust sizeOf
-      // for the struct total size (used for memory reading)
     }
 
     // Use totalSize from sizeOf if available, else computed
@@ -878,6 +932,65 @@ class VmServiceConnection {
     }
 
     return (fields: fields, totalSize: finalSize);
+  }
+
+  /// Recursively try type combinations to find one matching sizeOf.
+  ///
+  /// For each field, tries all candidate types (e.g., Int32 and Int64
+  /// for an `int` return type) and computes ABI-aligned offsets.
+  /// Returns the first combination whose total size matches [targetSize].
+  List<StructField>? _reconcileLayout(
+    List<String> fieldNames,
+    List<List<({String typeName, int size})>> typeOptions,
+    int targetSize,
+    int fieldIndex,
+    List<({String typeName, int size})> chosen,
+  ) {
+    if (fieldIndex == fieldNames.length) {
+      // All fields assigned — compute total with alignment and check
+      int offset = 0;
+      final fields = <StructField>[];
+      for (int i = 0; i < fieldNames.length; i++) {
+        final size = chosen[i].size;
+        // ABI alignment
+        if (size > 0 && offset % size != 0) {
+          offset = ((offset ~/ size) + 1) * size;
+        }
+        fields.add(StructField(
+          name: fieldNames[i],
+          typeName: chosen[i].typeName,
+          offset: offset,
+          size: size,
+        ));
+        offset += size;
+      }
+
+      // Check with struct end alignment (align total to max field size)
+      int maxAlign = 1;
+      for (final c in chosen) {
+        if (c.size > maxAlign) maxAlign = c.size;
+      }
+      if (offset % maxAlign != 0) {
+        offset = ((offset ~/ maxAlign) + 1) * maxAlign;
+      }
+
+      if (offset == targetSize) return fields;
+      return null;
+    }
+
+    // Try each candidate type for this field
+    for (final candidate in typeOptions[fieldIndex]) {
+      final result = _reconcileLayout(
+        fieldNames,
+        typeOptions,
+        targetSize,
+        fieldIndex + 1,
+        [...chosen, candidate],
+      );
+      if (result != null) return result;
+    }
+
+    return null;
   }
 
   /// Get the declared type name for a field from class inspection.

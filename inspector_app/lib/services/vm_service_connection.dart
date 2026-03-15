@@ -683,16 +683,53 @@ class VmServiceConnection {
     final functions = classJson?['functions'] as List?;
     if (functions != null) {
       _log('    Class $className has ${functions.length} functions');
+
+      // Log ALL function names and kinds for diagnosis
       for (final funcEntry in functions) {
         if (funcEntry is Map) {
           final funcName = funcEntry['name'] as String? ?? '';
+          final funcKind = funcEntry['kind'] as String? ?? '';
+          // Only log non-private for clarity
+          if (!funcName.startsWith('_')) {
+            _log('      fn: "$funcName" kind=$funcKind');
+          }
+        }
+      }
+
+      // Collect getter names using multiple strategies
+      for (final funcEntry in functions) {
+        if (funcEntry is Map) {
+          final funcName = funcEntry['name'] as String? ?? '';
+          final funcKind = funcEntry['kind'] as String? ?? '';
+
           // Skip synthetic FFI helpers, constructors, setters, private
           if (funcName.startsWith('#')) continue;
           if (funcName.startsWith('_')) continue;
           if (funcName.startsWith('set:')) continue;
+          if (funcName.contains('=')) continue; // setter
           if (funcName == className) continue; // constructor
+
+          // Strategy 1: Explicit get: prefix
           if (funcName.startsWith('get:')) {
-            getterNames.add(funcName.substring(4));
+            final name = funcName.substring(4);
+            if (!getterNames.contains(name)) getterNames.add(name);
+            continue;
+          }
+
+          // Strategy 2: kind == 'GetterFunction' or similar
+          if (funcKind.contains('Getter') || funcKind.contains('getter')) {
+            if (!getterNames.contains(funcName)) getterNames.add(funcName);
+            continue;
+          }
+
+          // Strategy 3: Simple name matching — any public non-constructor
+          // non-setter function that matches a likely field name pattern
+          // (lowercase start, no special characters)
+          if (funcName.isNotEmpty &&
+              funcName[0].toLowerCase() == funcName[0] &&
+              !funcName.contains(':') &&
+              !funcName.contains('.')) {
+            if (!getterNames.contains(funcName)) getterNames.add(funcName);
           }
         }
       }

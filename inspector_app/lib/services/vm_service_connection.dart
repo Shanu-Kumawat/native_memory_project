@@ -795,15 +795,53 @@ class VmServiceConnection {
     int totalSize = 0;
     final rootLibId = await _getRootLibraryId();
     if (rootLibId != null) {
-      try {
-        final sizeResult = await _service!.evaluate(
-          _isolateId!, rootLibId, 'sizeOf<$className>()');
-        if (sizeResult is InstanceRef && sizeResult.valueAsString != null) {
-          totalSize = int.tryParse(sizeResult.valueAsString!) ?? 0;
-          _log('    sizeOf<$className>() = $totalSize');
+      // Try multiple sizeOf expressions — the evaluate context may vary
+      final sizeExpressions = [
+        'sizeOf<$className>()',
+      ];
+
+      for (final expr in sizeExpressions) {
+        if (totalSize > 0) break;
+        try {
+          final sizeResult = await _service!.evaluate(
+            _isolateId!, rootLibId, expr);
+          if (sizeResult is InstanceRef && sizeResult.valueAsString != null) {
+            totalSize = int.tryParse(sizeResult.valueAsString!) ?? 0;
+            _log('    sizeOf<$className>() = $totalSize (via "$expr")');
+          } else {
+            // Log unexpected result type
+            final json = sizeResult.json;
+            _log('    sizeOf eval "$expr" returned: '
+                '${json?['type'] ?? sizeResult.runtimeType} '
+                '${json?['message'] ?? json?['valueAsString'] ?? ''}');
+          }
+        } catch (e) {
+          _log('    sizeOf eval "$expr" threw: $e');
         }
-      } catch (e) {
-        _log('    sizeOf<$className>() eval failed: $e');
+      }
+
+      // Fallback: try evaluating in the class's own library
+      if (totalSize == 0) {
+        final classLibId = cls.library?.id;
+        if (classLibId != null && classLibId != rootLibId) {
+          try {
+            final sizeResult = await _service!.evaluate(
+              _isolateId!, classLibId, 'sizeOf<$className>()');
+            if (sizeResult is InstanceRef &&
+                sizeResult.valueAsString != null) {
+              totalSize = int.tryParse(sizeResult.valueAsString!) ?? 0;
+              _log('    sizeOf<$className>() = $totalSize '
+                  '(via class library)');
+            }
+          } catch (e) {
+            _log('    sizeOf via class library failed: $e');
+          }
+        }
+      }
+
+      if (totalSize == 0) {
+        _log('    ⚠ Could not evaluate sizeOf<$className>() — '
+            'will use default type mapping');
       }
     }
 

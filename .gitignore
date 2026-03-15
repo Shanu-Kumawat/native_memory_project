@@ -6,6 +6,7 @@ pubspec.lock
 # Build outputs
 build/
 *.exe
+tests/test_memory_read
 
 # IDE
 .idea/

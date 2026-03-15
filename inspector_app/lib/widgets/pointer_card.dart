@@ -238,7 +238,7 @@ class _PointerCardState extends State<PointerCard>
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 200),
       child: switch (_tabIndex) {
-        0 => FieldTreeView(key: const ValueKey('fields'), fields: d.fields),
+        0 => FieldTreeView(key: const ValueKey('fields'), fields: d.fields, rawBytes: d.rawBytes),
         1 => HexDumpView(
             key: const ValueKey('hex'),
             bytes: d.rawBytes ?? [],

@@ -26,3 +26,5 @@ devtools/
 
 # Gemini brain
 .gemini/
+
+.cipd

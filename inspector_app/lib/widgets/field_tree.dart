@@ -1,4 +1,8 @@
 /// Struct field tree widget for displaying decoded struct fields.
+/// When raw bytes are available (from _readNativeMemory RPC), decodes
+/// actual field values from memory. Otherwise shows layout-only data.
+
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -9,9 +13,12 @@ class FieldTreeView extends StatelessWidget {
   const FieldTreeView({
     super.key,
     required this.fields,
+    this.rawBytes,
   });
 
   final List<StructField> fields;
+  /// Raw bytes from native memory (via _readNativeMemory RPC).
+  final List<int>? rawBytes;
 
   @override
   Widget build(BuildContext context) {
@@ -61,18 +68,46 @@ class FieldTreeView extends StatelessWidget {
           ),
         ),
         const Divider(color: InspectorTheme.border, height: 1),
+        // Source indicator
+        if (rawBytes != null && rawBytes!.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Row(
+              children: [
+                Icon(Icons.memory, size: 12, color: InspectorTheme.success),
+                const SizedBox(width: 4),
+                Text(
+                  'Live memory values (${rawBytes!.length} bytes read)',
+                  style: InspectorTheme.monoSmall.copyWith(
+                    color: InspectorTheme.success,
+                    fontSize: 9,
+                  ),
+                ),
+              ],
+            ),
+          ),
         // Field rows
-        for (int i = 0; i < fields.length; i++) _FieldRow(field: fields[i], index: i),
+        for (int i = 0; i < fields.length; i++)
+          _FieldRow(
+            field: fields[i],
+            index: i,
+            rawBytes: rawBytes,
+          ),
       ],
     );
   }
 }
 
 class _FieldRow extends StatefulWidget {
-  const _FieldRow({required this.field, required this.index});
+  const _FieldRow({
+    required this.field,
+    required this.index,
+    this.rawBytes,
+  });
 
   final StructField field;
   final int index;
+  final List<int>? rawBytes;
 
   @override
   State<_FieldRow> createState() => _FieldRowState();
@@ -85,7 +120,10 @@ class _FieldRowState extends State<_FieldRow> {
   Widget build(BuildContext context) {
     final f = widget.field;
     final typeColor = InspectorTheme.typeColor(f.typeName);
-    final isLast = false; // Will be set by parent if needed
+
+    // Try to decode value from raw bytes
+    final decodedValue = _decodeFieldValue(f, widget.rawBytes);
+    final hasLiveValue = decodedValue != null;
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
@@ -102,13 +140,13 @@ class _FieldRowState extends State<_FieldRow> {
         ),
         child: Row(
           children: [
-            // Tree connector
+            // Tree connector + name
             Expanded(
               flex: 3,
               child: Row(
                 children: [
                   Icon(
-                    isLast ? Icons.subdirectory_arrow_right : Icons.remove,
+                    Icons.remove,
                     size: 14,
                     color: InspectorTheme.border,
                   ),
@@ -123,23 +161,10 @@ class _FieldRowState extends State<_FieldRow> {
                 ],
               ),
             ),
-            // Value
+            // Value — decoded from memory or from field.value
             Expanded(
               flex: 3,
-              child: f.isReadable && f.value != null
-                  ? Text(
-                      _formatValue(f),
-                      style: InspectorTheme.mono.copyWith(
-                        color: InspectorTheme.text,
-                      ),
-                    )
-                  : Text(
-                      f.isReadable ? '—' : '<unreadable>',
-                      style: InspectorTheme.monoSmall.copyWith(
-                        color: InspectorTheme.error,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
+              child: _buildValueCell(f, decodedValue, hasLiveValue),
             ),
             // Type badge
             Expanded(
@@ -169,6 +194,77 @@ class _FieldRowState extends State<_FieldRow> {
     );
   }
 
+  Widget _buildValueCell(StructField f, String? decodedValue, bool hasLiveValue) {
+    if (hasLiveValue) {
+      return Row(
+        children: [
+          Text(
+            decodedValue!,
+            style: InspectorTheme.mono.copyWith(
+              color: InspectorTheme.text,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Icon(Icons.memory, size: 10, color: InspectorTheme.success.withValues(alpha: 0.6)),
+        ],
+      );
+    }
+
+    // Fallback: use field.value if available
+    if (f.isReadable && f.value != null) {
+      return Text(
+        _formatValue(f),
+        style: InspectorTheme.mono.copyWith(
+          color: InspectorTheme.text,
+        ),
+      );
+    }
+
+    return Text(
+      f.isReadable ? '—' : '<unreadable>',
+      style: InspectorTheme.monoSmall.copyWith(
+        color: InspectorTheme.error,
+        fontStyle: FontStyle.italic,
+      ),
+    );
+  }
+
+  /// Decode a field's value from raw bytes using its offset, size, and type.
+  String? _decodeFieldValue(StructField field, List<int>? rawBytes) {
+    if (rawBytes == null || rawBytes.isEmpty) return null;
+    if (field.offset + field.size > rawBytes.length) return null;
+
+    try {
+      final bytes = Uint8List.fromList(
+        rawBytes.sublist(field.offset, field.offset + field.size),
+      );
+      final bd = ByteData.sublistView(bytes);
+
+      return switch (field.typeName) {
+        'Int8' => bd.getInt8(0).toString(),
+        'Uint8' => bd.getUint8(0).toString(),
+        'Int16' => bd.getInt16(0, Endian.little).toString(),
+        'Uint16' => bd.getUint16(0, Endian.little).toString(),
+        'Int32' => bd.getInt32(0, Endian.little).toString(),
+        'Uint32' => bd.getUint32(0, Endian.little).toString(),
+        'Int64' => bd.getInt64(0, Endian.little).toString(),
+        'Uint64' => bd.getUint64(0, Endian.little).toString(),
+        'Float' => bd.getFloat32(0, Endian.little).toStringAsFixed(4),
+        'Double' => bd.getFloat64(0, Endian.little).toStringAsFixed(6),
+        'Bool' => bd.getUint8(0) != 0 ? 'true' : 'false',
+        _ when field.typeName.startsWith('Pointer') =>
+          '0x${bd.getUint64(0, Endian.little).toRadixString(16)}',
+        _ => _hexString(bytes),
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  String _hexString(Uint8List bytes) {
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+  }
+
   String _formatValue(StructField f) {
     final v = f.value;
     if (v is double) {
@@ -181,7 +277,7 @@ class _FieldRowState extends State<_FieldRow> {
       return v.toString();
     }
     if (v is String && v.startsWith('0x')) {
-      return v; // Already formatted as hex
+      return v;
     }
     return v.toString();
   }

@@ -41,7 +41,28 @@ class PointerData {
 
   bool get isNull => address == 0;
   bool get hasError => error != null;
+  bool get hasRawBytes => rawBytes != null && rawBytes!.isNotEmpty;
   String get addressHex => '0x${address.toRadixString(16).padLeft(12, '0')}';
+
+  PointerData copyWith({
+    String? variableName,
+    String? nativeType,
+    int? address,
+    int? structSize,
+    List<StructField>? fields,
+    List<int>? rawBytes,
+    String? error,
+  }) {
+    return PointerData(
+      variableName: variableName ?? this.variableName,
+      nativeType: nativeType ?? this.nativeType,
+      address: address ?? this.address,
+      structSize: structSize ?? this.structSize,
+      fields: fields ?? this.fields,
+      rawBytes: rawBytes ?? this.rawBytes,
+      error: error,
+    );
+  }
 }
 
 /// Connection state for the VM Service.

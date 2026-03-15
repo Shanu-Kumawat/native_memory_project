@@ -427,22 +427,41 @@ class VmServiceConnection {
 
       // ── Extract type ──
 
-      // Strategy 0: Enriched protocol (nativeType in JSON)
+      // Detect enriched protocol via kind field
+      final instanceKindFromJson = instanceJson?['kind'];
+      if (instanceKindFromJson == 'Pointer') {
+        _hasEnrichedProtocol = true;
+        _log('    ✓ Enriched protocol detected (kind: Pointer)');
+      }
+
+      // Strategy 0: Enriched protocol (nativeType in Instance JSON)
+      // NOTE: Due to FFI type erasure, the Dart compiler's FFI transformer
+      // replaces Pointer<MyStruct> → Pointer<Never> at compile time.
+      // So the VM's type_argument() returns "Never" even with our SDK
+      // changes. This is a COMPILER-level issue, not a VM-level one.
+      // The heuristic fallback (Strategy 3) is still needed until the
+      // FFI transformer is modified to preserve type arguments.
       if (instanceJson != null && instanceJson.containsKey('nativeType')) {
         final ntData = instanceJson['nativeType'];
-        if (ntData is Map && ntData.containsKey('name')) {
-          final ntName = ntData['name'] as String?;
-          if (ntName != null && ntName != 'Never') {
-            nativeType = ntName;
-            typeSource = 'enriched protocol';
-            _hasEnrichedProtocol = true;
-            _log('    type via enriched protocol: $nativeType');
-          }
-        } else if (ntData is String && ntData != 'Never') {
-          nativeType = ntData;
+        String? extractedName;
+
+        if (ntData is Map) {
+          // Full Type JSON object: {"type": "@Type", "name": "Never", ...}
+          extractedName = ntData['name'] as String?;
+          _log('    nativeType from protocol: $extractedName '
+              '(class: ${ntData['type']})');
+        } else if (ntData is String) {
+          extractedName = ntData;
+          _log('    nativeType from protocol: $extractedName (string)');
+        }
+
+        if (extractedName != null && extractedName != 'Never') {
+          nativeType = extractedName;
           typeSource = 'enriched protocol';
-          _hasEnrichedProtocol = true;
-          _log('    type via enriched protocol: $nativeType');
+          _log('    ✓ Type resolved via enriched protocol: $nativeType');
+        } else if (extractedName == 'Never') {
+          _log('    nativeType is "Never" (FFI type erasure — '
+              'compiler strips Pointer<T> → Pointer<Never>)');
         }
       }
 

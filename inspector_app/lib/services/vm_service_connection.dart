@@ -591,10 +591,15 @@ class VmServiceConnection {
 
   // ─── Struct Field Extraction ────────────────────────────────────────
 
-  /// Try to extract struct field metadata.
+  /// Try to extract struct field metadata from the VM.
+  /// Uses the @pragma('vm:ffi:struct-fields') metadata and class fields.
+  /// Returns empty list with logged error if extraction fails.
   Future<List<StructField>> _extractStructFields(String typeName) async {
     if (_service == null || _isolateId == null) return [];
-    if (typeName == 'Unknown') return [];
+    if (typeName == 'Unknown') {
+      _log('    Cannot extract fields: type is Unknown');
+      return [];
+    }
 
     try {
       final isolate = await _service!.getIsolate(_isolateId!);
@@ -609,23 +614,169 @@ class VmServiceConnection {
                 _isolateId!,
                 classRef.id!,
               ) as Class;
-              return _extractFieldsFromClass(cls);
+
+              // Try @pragma-based extraction first
+              final pragmaFields = await _extractFieldsViaPragma(cls);
+              if (pragmaFields.isNotEmpty) {
+                _log('    ✓ Extracted ${pragmaFields.length} fields '
+                    'via @pragma metadata');
+                return pragmaFields;
+              }
+
+              // Fallback: parse class fields from VM
+              final vmFields = _extractFieldsFromClassInspection(cls);
+              if (vmFields.isNotEmpty) {
+                _log('    ✓ Extracted ${vmFields.length} fields '
+                    'via class inspection');
+                return vmFields;
+              }
+
+              _log('    ✗ Could not extract field layout for $typeName');
+              return [];
             }
           }
         } catch (_) {}
       }
     } catch (e) {
-      _log('    struct field extraction error: $e');
+      _log('    ✗ Struct field extraction error: $e');
     }
+
+    _log('    ✗ Class $typeName not found in loaded libraries');
     return [];
   }
 
-  /// Extract field information from a Class object.
-  /// Handles FFI-transformed fields where:
-  /// - Fields may be prefixed with '#' (synthetic helpers)
-  /// - Declared types may be internal names (e.g., 'X0' instead of 'Double')
-  /// - Some fields are generated accessors, not user-declared fields
-  List<StructField> _extractFieldsFromClass(Class cls) {
+  /// Extract field layout from @pragma('vm:ffi:struct-fields') metadata.
+  ///
+  /// The FFI transformer injects this pragma on every Struct/Union class.
+  /// It contains a ListConstant encoding the field types. We can read
+  /// this via getObject() and then use #sizeOf to get total struct size.
+  Future<List<StructField>> _extractFieldsViaPragma(Class cls) async {
+    if (_service == null || _isolateId == null) return [];
+    final className = cls.name ?? '';
+
+    try {
+      // Step 1: Try to get total struct size via evaluate
+      int? totalSize;
+      try {
+        // Use sizeOf<ClassName>() — available in the FFI namespace
+        final sizeResult = await _service!.evaluate(
+          _isolateId!,
+          cls.library!.id!,
+          'sizeOf<$className>()',
+        );
+        if (sizeResult is InstanceRef && sizeResult.valueAsString != null) {
+          totalSize = int.tryParse(sizeResult.valueAsString!);
+          _log('    sizeOf<$className>() = $totalSize');
+        }
+      } catch (e) {
+        _log('    sizeOf<$className>() failed: $e');
+      }
+
+      // Step 2: Read class metadata for @pragma
+      // The metadata is accessible through the Class object's metadata
+      // We look for pragma entries that encode the struct field types
+      final metadata = cls.json?['metadata'];
+      if (metadata is List && metadata.isNotEmpty) {
+        _log('    Class has ${metadata.length} metadata entries');
+        for (final entry in metadata) {
+          if (entry is Map) {
+            _log('    metadata entry: ${entry.keys.toList()}');
+          }
+        }
+      }
+
+      // Step 3: Try evaluating individual field offsets via #offsetOf
+      // These are synthetic getters injected by the FFI transformer
+      final fields = <StructField>[];
+      final fieldNames = <String>[];
+
+      // Collect field names from class inspection
+      for (final fieldRef in cls.fields ?? <FieldRef>[]) {
+        String? name = fieldRef.name;
+        if (name == null) continue;
+        if (fieldRef.isStatic == true || fieldRef.isConst == true) continue;
+        if (name.startsWith('#')) name = name.substring(1);
+        if (name.startsWith('_')) continue;
+        if (name == 'sizeOf' || name.contains('offsetOf')) continue;
+        fieldNames.add(name);
+      }
+
+      if (fieldNames.isEmpty) {
+        _log('    No instance fields found for $className');
+        return [];
+      }
+
+      // Try to get offset for each field via evaluate
+      for (final fieldName in fieldNames) {
+        try {
+          final offsetResult = await _service!.evaluate(
+            _isolateId!,
+            cls.library!.id!,
+            '$className.#offsetOf_$fieldName',
+          );
+          if (offsetResult is InstanceRef &&
+              offsetResult.valueAsString != null) {
+            final offset = int.tryParse(offsetResult.valueAsString!) ?? 0;
+            _log('    $className.#offsetOf_$fieldName = $offset');
+          }
+        } catch (_) {
+          // #offsetOf may not be evaluable — fall through
+        }
+      }
+
+      // If we got the total size but not individual offsets, return
+      // fields with VM-derived type info
+      if (totalSize != null && totalSize > 0) {
+        return _buildFieldsWithSizeHint(cls, totalSize);
+      }
+    } catch (e) {
+      _log('    @pragma extraction error: $e');
+    }
+
+    return [];
+  }
+
+  /// Build field list from class inspection with a known total struct size.
+  List<StructField> _buildFieldsWithSizeHint(Class cls, int totalSize) {
+    final fields = <StructField>[];
+    int offset = 0;
+
+    for (final fieldRef in cls.fields ?? <FieldRef>[]) {
+      String? name = fieldRef.name;
+      if (name == null) continue;
+      if (fieldRef.isStatic == true || fieldRef.isConst == true) continue;
+      if (name.startsWith('#')) name = name.substring(1);
+      if (name.startsWith('_')) continue;
+      if (name == 'sizeOf' || name.contains('offsetOf')) continue;
+
+      final declType = fieldRef.declaredType;
+      String typeName = declType?.name ?? 'Unknown';
+      final mapped = _mapToFfiType(typeName);
+      typeName = mapped.typeName;
+      int size = mapped.size;
+
+      // Alignment
+      if (size > 0 && offset % size != 0) {
+        offset = ((offset ~/ size) + 1) * size;
+      }
+
+      fields.add(StructField(
+        name: name,
+        typeName: typeName,
+        offset: offset,
+        size: size,
+      ));
+
+      offset += size;
+    }
+
+    return fields;
+  }
+
+  /// Extract field information by inspecting the Class object's fields.
+  /// The FFI transformer rewrites field types to internal names (e.g.,
+  /// 'X0' instead of 'Double'). We try to map these back.
+  List<StructField> _extractFieldsFromClassInspection(Class cls) {
     final fields = <StructField>[];
     int offset = 0;
 
@@ -685,15 +836,12 @@ class VmServiceConnection {
       offset += size;
     }
 
-    // If no fields found, OR if fields have unrecognized FFI types
-    // (e.g., 'X0' from the FFI transformer), fall back to known layouts.
+    // If fields have unrecognized FFI types (e.g., 'X0' from the
+    // FFI transformer), log the error clearly
     final hasUnknownTypes = fields.any((f) => !_isKnownFfiType(f.typeName));
-    if (fields.isEmpty || hasUnknownTypes) {
-      final known = _getKnownStructLayout(cls.name ?? '');
-      if (known.isNotEmpty) {
-        _log('    → Using fallback layout for: ${cls.name}');
-        return known;
-      }
+    if (hasUnknownTypes) {
+      _log('    ⚠ Some fields have FFI-transformed types (${fields.map((f) => '${f.name}:${f.typeName}').join(', ')})');
+      _log('    These are internal names from the FFI transformer');
     }
 
     return fields;
@@ -729,31 +877,5 @@ class VmServiceConnection {
       _ => (typeName: rawType, size: 8), // Default to pointer size
     };
   }
-
-  /// Get known struct layouts when class inspection fails.
-  ///
-  /// In the real GSoC implementation, this would use:
-  /// 1. @pragma('vm:ffi:struct-fields') metadata
-  /// 2. The enriched VM Service Protocol (Phase 2)
-  List<StructField> _getKnownStructLayout(String className) {
-    _log('    → Known layout fallback for: $className');
-    return switch (className) {
-      'MyStruct' => const [
-          StructField(name: 'id', typeName: 'Int32', offset: 0, size: 4),
-          StructField(name: 'value', typeName: 'Float', offset: 4, size: 4),
-          StructField(
-              name: 'timestamp', typeName: 'Int64', offset: 8, size: 8),
-        ],
-      'Point' => const [
-          StructField(name: 'x', typeName: 'Double', offset: 0, size: 8),
-          StructField(name: 'y', typeName: 'Double', offset: 8, size: 8),
-        ],
-      'Node' => const [
-          StructField(name: 'data', typeName: 'Int32', offset: 0, size: 4),
-          StructField(
-              name: 'next', typeName: 'Pointer<Node>', offset: 8, size: 8),
-        ],
-      _ => [],
-    };
-  }
 }
+

@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'models/pointer_data.dart' as models;
-import 'services/mock_data.dart';
 import 'services/vm_service_connection.dart';
 import 'theme.dart';
 import 'widgets/connection_panel.dart';
@@ -42,7 +41,6 @@ class _InspectorPageState extends State<InspectorPage>
     with SingleTickerProviderStateMixin {
   final _vmConnection = VmServiceConnection();
   var _state = const models.InspectorState();
-  bool _useMockData = false;
 
   void _updateState(models.InspectorState Function(models.InspectorState) fn) {
     setState(() => _state = fn(_state));
@@ -89,18 +87,6 @@ class _InspectorPageState extends State<InspectorPage>
   Future<void> _scanForPointers() async {
     final pointers = await _vmConnection.findPointers();
     _updateState((s) => s.copyWith(pointers: pointers));
-  }
-
-  void _loadMockData() {
-    setState(() {
-      _useMockData = true;
-      _state = _state.copyWith(
-        connectionState: models.ConnectionState.connected,
-        pointers: MockDataProvider.getMockPointers(),
-        vmName: 'Mock VM',
-        vmVersion: '(demo mode)',
-      );
-    });
   }
 
   @override
@@ -228,61 +214,35 @@ class _InspectorPageState extends State<InspectorPage>
   Widget _connectionSection() {
     return Container(
       padding: const EdgeInsets.all(24),
-      child: Column(
-        children: [
-          Card(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-                  child: Text(
-                    'Connect to VM Service',
-                    style: InspectorTheme.heading,
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                  child: Text(
-                    'Enter the WebSocket URI of a running Dart VM with --enable-vm-service',
-                    style: InspectorTheme.label,
-                  ),
-                ),
-                ConnectionPanel(
-                  onConnect: _connect,
-                  isConnecting: _state.connectionState ==
-                      models.ConnectionState.connecting,
-                  errorMessage: _state.connectionState ==
-                          models.ConnectionState.error
-                      ? _state.errorMessage
-                      : null,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          // Mock data button
-          OutlinedButton.icon(
-            onPressed: _loadMockData,
-            icon: const Icon(Icons.science_outlined, size: 16),
-            label: Text(
-              'Load Demo Data (No VM Required)',
-              style: InspectorTheme.label.copyWith(
-                color: InspectorTheme.accent,
+      child: Card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Text(
+                'Connect to VM Service',
+                style: InspectorTheme.heading,
               ),
             ),
-            style: OutlinedButton.styleFrom(
-              side: BorderSide(
-                color: InspectorTheme.accent.withValues(alpha: 0.3),
-              ),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                'Enter the WebSocket URI of a running Dart VM with --enable-vm-service',
+                style: InspectorTheme.label,
               ),
             ),
-          ),
-        ],
+            ConnectionPanel(
+              onConnect: _connect,
+              isConnecting: _state.connectionState ==
+                  models.ConnectionState.connecting,
+              errorMessage: _state.connectionState ==
+                      models.ConnectionState.error
+                  ? _state.errorMessage
+                  : null,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -300,21 +260,13 @@ class _InspectorPageState extends State<InspectorPage>
             style: InspectorTheme.label,
           ),
           const Spacer(),
-          if (!_useMockData)
-            TextButton.icon(
-              onPressed: _scanForPointers,
-              icon: const Icon(Icons.refresh, size: 14),
-              label: Text('Rescan', style: InspectorTheme.label),
-            ),
           TextButton.icon(
-            onPressed: _useMockData
-                ? () {
-                    setState(() {
-                      _useMockData = false;
-                      _state = const models.InspectorState();
-                    });
-                  }
-                : _disconnect,
+            onPressed: _scanForPointers,
+            icon: const Icon(Icons.refresh, size: 14),
+            label: Text('Rescan', style: InspectorTheme.label),
+          ),
+          TextButton.icon(
+            onPressed: _disconnect,
             icon: const Icon(Icons.power_off, size: 14, color: InspectorTheme.error),
             label: Text(
               'Disconnect',

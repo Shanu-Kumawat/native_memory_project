@@ -791,58 +791,56 @@ class VmServiceConnection {
 
     }
 
-    // ── Evaluate sizeOf<T>() ──
+    // ── Get struct size via invoke on #sizeOf ──
+    // sizeOf<T>() via evaluate() fails: it's an FFI patch stub that throws
+    // UnimplementedError at runtime. The FFI transformer injects #sizeOf
+    // as a static getter on the class with the real size values.
+    // We use invoke() which accepts internal function names (with #).
     int totalSize = 0;
-    final rootLibId = await _getRootLibraryId();
-    if (rootLibId != null) {
-      // Try multiple sizeOf expressions — the evaluate context may vary
-      final sizeExpressions = [
-        'sizeOf<$className>()',
-      ];
+    final classId = cls.id;
+    if (classId != null) {
+      try {
+        final sizeResult = await _service!.invoke(
+          _isolateId!, classId, '#sizeOf', []);
+        if (sizeResult is InstanceRef && sizeResult.valueAsString != null) {
+          totalSize = int.tryParse(sizeResult.valueAsString!) ?? 0;
+          _log('    #sizeOf = $totalSize (via invoke)');
+        } else {
+          final json = sizeResult.json;
+          _log('    #sizeOf invoke returned: '
+              '${json?['type'] ?? sizeResult.runtimeType} '
+              '${json?['message'] ?? json?['valueAsString'] ?? ''}');
+        }
+      } catch (e) {
+        _log('    #sizeOf invoke failed: $e');
+      }
+    }
 
-      for (final expr in sizeExpressions) {
-        if (totalSize > 0) break;
+    // ── Get field offsets via invoke on fieldName#offsetOf ──
+    final evaluatedOffsets = <String, int>{};
+    if (classId != null && offsetOfNames.isNotEmpty) {
+      for (final fieldName in fieldNames) {
+        if (!offsetOfNames.contains(fieldName)) continue;
         try {
-          final sizeResult = await _service!.evaluate(
-            _isolateId!, rootLibId, expr);
-          if (sizeResult is InstanceRef && sizeResult.valueAsString != null) {
-            totalSize = int.tryParse(sizeResult.valueAsString!) ?? 0;
-            _log('    sizeOf<$className>() = $totalSize (via "$expr")');
-          } else {
-            // Log unexpected result type
-            final json = sizeResult.json;
-            _log('    sizeOf eval "$expr" returned: '
-                '${json?['type'] ?? sizeResult.runtimeType} '
-                '${json?['message'] ?? json?['valueAsString'] ?? ''}');
+          final offsetResult = await _service!.invoke(
+            _isolateId!, classId, '${fieldName}#offsetOf', []);
+          if (offsetResult is InstanceRef &&
+              offsetResult.valueAsString != null) {
+            final offset = int.tryParse(offsetResult.valueAsString!) ?? -1;
+            if (offset >= 0) {
+              evaluatedOffsets[fieldName] = offset;
+              _log('    ${fieldName}#offsetOf = $offset (via invoke)');
+            }
           }
         } catch (e) {
-          _log('    sizeOf eval "$expr" threw: $e');
+          _log('    ${fieldName}#offsetOf invoke failed: $e');
         }
       }
+    }
 
-      // Fallback: try evaluating in the class's own library
-      if (totalSize == 0) {
-        final classLibId = cls.library?.id;
-        if (classLibId != null && classLibId != rootLibId) {
-          try {
-            final sizeResult = await _service!.evaluate(
-              _isolateId!, classLibId, 'sizeOf<$className>()');
-            if (sizeResult is InstanceRef &&
-                sizeResult.valueAsString != null) {
-              totalSize = int.tryParse(sizeResult.valueAsString!) ?? 0;
-              _log('    sizeOf<$className>() = $totalSize '
-                  '(via class library)');
-            }
-          } catch (e) {
-            _log('    sizeOf via class library failed: $e');
-          }
-        }
-      }
-
-      if (totalSize == 0) {
-        _log('    ⚠ Could not evaluate sizeOf<$className>() — '
-            'will use default type mapping');
-      }
+    if (totalSize == 0) {
+      _log('    ⚠ Could not get struct size — '
+          'will use default type mapping');
     }
 
     // ── Get field types from getter return types ──
@@ -927,8 +925,8 @@ class VmServiceConnection {
       return (fields: bestLayout, totalSize: totalSize);
     }
 
-    // Fallback: use default type mapping
-    _log('    Using default type mapping (no sizeOf match)');
+    // Fallback: use default type mapping with evaluated offsets
+    _log('    Using default type mapping (no sizeOf reconciliation)');
     final fields = <StructField>[];
     int computedOffset = 0;
 
@@ -939,11 +937,17 @@ class VmServiceConnection {
       String typeName = mapped.typeName;
       int size = mapped.size;
 
-      // Compute offset with ABI alignment
-      if (size > 0 && computedOffset % size != 0) {
-        computedOffset = ((computedOffset ~/ size) + 1) * size;
+      // Use evaluated offset if available, otherwise compute
+      int offset;
+      if (evaluatedOffsets.containsKey(name)) {
+        offset = evaluatedOffsets[name]!;
+      } else {
+        // Compute offset with ABI alignment
+        if (size > 0 && computedOffset % size != 0) {
+          computedOffset = ((computedOffset ~/ size) + 1) * size;
+        }
+        offset = computedOffset;
       }
-      int offset = computedOffset;
 
       fields.add(StructField(
         name: name,

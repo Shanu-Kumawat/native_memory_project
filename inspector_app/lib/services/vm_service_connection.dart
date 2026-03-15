@@ -191,19 +191,63 @@ class VmServiceConnection {
     bool wePaused = false;
 
     try {
-      // Step 1: Check isolate state and pause if needed
+      // Step 1: Check isolate state
       final isolate = await _service!.getIsolate(_isolateId!);
       final pauseKind = isolate.pauseEvent?.kind;
       _log('Isolate pause state: $pauseKind');
 
-      final isPaused = pauseKind == EventKind.kPauseBreakpoint ||
-          pauseKind == EventKind.kPauseInterrupted ||
-          pauseKind == EventKind.kPauseException ||
-          pauseKind == EventKind.kPausePostRequest ||
-          pauseKind == EventKind.kPauseStart ||
-          pauseKind == EventKind.kPauseExit;
+      // Handle PauseStart specially: main() hasn't run yet, so we need
+      // to resume and wait for the debugger() breakpoint.
+      if (pauseKind == EventKind.kPauseStart) {
+        _log('Isolate paused at start — resuming to reach debugger()...');
+        
+        // Subscribe to debug events to detect when we hit the breakpoint
+        final completer = Completer<void>();
+        StreamSubscription? sub;
+        
+        sub = _service!.onDebugEvent.listen((event) {
+          _log('Debug event: ${event.kind}');
+          if (event.kind == EventKind.kPauseBreakpoint ||
+              event.kind == EventKind.kPauseInterrupted ||
+              event.kind == EventKind.kPauseException) {
+            if (!completer.isCompleted) {
+              completer.complete();
+            }
+            sub?.cancel();
+          }
+        });
 
-      if (!isPaused) {
+        await _service!.streamListen(EventStreams.kDebug);
+        await _service!.resume(_isolateId!);
+
+        // Wait for the breakpoint (timeout after 10 seconds)
+        try {
+          await completer.future.timeout(const Duration(seconds: 10));
+          _log('Isolate hit breakpoint — ready to scan');
+        } catch (e) {
+          _log('Timeout waiting for breakpoint: $e');
+          sub?.cancel();
+          // Try pausing manually as fallback
+          await _service!.pause(_isolateId!);
+          wePaused = true;
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
+
+        try {
+          await _service!.streamCancel(EventStreams.kDebug);
+        } catch (_) {}
+      }
+
+      final isPaused = () {
+        // Re-check after possible PauseStart handling
+        return pauseKind == EventKind.kPauseBreakpoint ||
+            pauseKind == EventKind.kPauseInterrupted ||
+            pauseKind == EventKind.kPauseException ||
+            pauseKind == EventKind.kPausePostRequest ||
+            pauseKind == EventKind.kPauseExit;
+      }();
+
+      if (!isPaused && pauseKind != EventKind.kPauseStart) {
         _log('Pausing isolate...');
         await _service!.pause(_isolateId!);
         wePaused = true;

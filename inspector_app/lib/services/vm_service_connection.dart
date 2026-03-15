@@ -511,11 +511,15 @@ class VmServiceConnection {
       _log('    nativeType: $nativeType (via $typeSource)');
 
       // ── Extract struct layout ──
-      final fields = await _extractStructFields(nativeType);
-      final structSize =
-          fields.isNotEmpty ? fields.last.offset + fields.last.size : 0;
+      final layout = await _extractStructFields(nativeType);
+      final fields = layout.fields;
+      final structSize = layout.totalSize > 0
+          ? layout.totalSize
+          : (fields.isNotEmpty
+              ? fields.last.offset + fields.last.size
+              : 0);
       _log('    struct layout: ${fields.length} fields, '
-          'total size: $structSize bytes');
+          'total size: $structSize bytes (sizeOf=${ layout.totalSize })');
 
       return PointerData(
         variableName: varName,
@@ -620,11 +624,15 @@ class VmServiceConnection {
   /// - @pragma('vm:ffi:struct-fields') injected with type list
   ///
   /// Strategy: get field NAMES from getters, TYPES from pragma/evaluate.
-  Future<List<StructField>> _extractStructFields(String typeName) async {
-    if (_service == null || _isolateId == null) return [];
+  /// Returns both the field list and the evaluated total size.
+  Future<({List<StructField> fields, int totalSize})> _extractStructFields(
+      String typeName) async {
+    if (_service == null || _isolateId == null) {
+      return (fields: <StructField>[], totalSize: 0);
+    }
     if (typeName == 'Unknown') {
       _log('    Cannot extract fields: type is Unknown');
-      return [];
+      return (fields: <StructField>[], totalSize: 0);
     }
 
     try {
@@ -641,101 +649,119 @@ class VmServiceConnection {
                 classRef.id!,
               ) as Class;
 
-              final fields = await _extractFieldsFromStruct(cls);
-              if (fields.isNotEmpty) {
-                _log('    ✓ Extracted ${fields.length} fields for $typeName');
-                return fields;
+              final result = await _extractFieldsFromStruct(cls);
+              if (result.fields.isNotEmpty) {
+                _log('    ✓ Extracted ${result.fields.length} fields '
+                    'for $typeName (sizeOf=${result.totalSize})');
+                return result;
               }
 
               _log('    ✗ Could not extract field layout for $typeName');
-              return [];
+              return (fields: <StructField>[], totalSize: 0);
             }
           }
         } catch (_) {}
       }
     } catch (e) {
       _log('    ✗ Struct field extraction error: $e');
+      return (fields: <StructField>[], totalSize: 0);
     }
 
     _log('    ✗ Class $typeName not found in loaded libraries');
-    return [];
+    return (fields: <StructField>[], totalSize: 0);
   }
 
   /// Extract field layout for an FFI Struct/Union class.
   ///
-  /// The FFI transformer rewrites struct classes:
-  /// - Original `external int x;` → getter `get x` + setter `set x`
-  /// - Field declarations may vanish from Class.fields
-  /// - @pragma('vm:ffi:struct-fields') injected with type list
-  /// - Synthetic helpers: #sizeOf, #offsetOf injected
+  /// The FFI transformer rewrites struct classes and generates:
+  /// - Getter/setter pairs: `id`, `id=` for each field
+  /// - Offset helpers: `id#offsetOf` for each field (evaluable)
+  /// - Size helper: `#sizeOf` for total struct size (evaluable)
+  /// - Constructors: `ClassName`, `ClassName.#fromTypedDataBase`, etc.
   ///
-  /// We get field NAMES from class functions (getters), and TYPES from
-  /// pragma metadata or class field declared types.
-  Future<List<StructField>> _extractFieldsFromStruct(Class cls) async {
+  /// Strategy:
+  /// 1. Use `fieldName#offsetOf` entries as the authoritative field list
+  /// 2. For structs without #offsetOf (same-type fields), use setter
+  ///    matching: if `name=` exists, `name` is a field
+  /// 3. Evaluate #offsetOf and #sizeOf for ABI-correct layout
+  /// 4. Get field types from Class.fields or size-based inference
+  Future<({List<StructField> fields, int totalSize})>
+      _extractFieldsFromStruct(Class cls) async {
     final className = cls.name ?? '';
     final classJson = cls.json;
 
-    // ── Step 1: Get field NAMES from class getters ──
-    // The FFI transformer turns `external int x;` into getter/setter.
-    // These show up in the class's 'functions' list.
-    final getterNames = <String>[];
+    // ── Scan all functions ──
+    final allFuncNames = <String>[];
+    final offsetOfNames = <String>{};  // fields that have #offsetOf
+    final setterNames = <String>{};    // fields that have setters
 
     final functions = classJson?['functions'] as List?;
     if (functions != null) {
       _log('    Class $className has ${functions.length} functions');
 
-      // Log ALL function names and kinds for diagnosis
       for (final funcEntry in functions) {
         if (funcEntry is Map) {
           final funcName = funcEntry['name'] as String? ?? '';
-          final funcKind = funcEntry['kind'] as String? ?? '';
-          // Only log non-private for clarity
-          if (!funcName.startsWith('_')) {
-            _log('      fn: "$funcName" kind=$funcKind');
-          }
-        }
-      }
+          allFuncNames.add(funcName);
 
-      // Collect getter names using multiple strategies
-      for (final funcEntry in functions) {
-        if (funcEntry is Map) {
-          final funcName = funcEntry['name'] as String? ?? '';
-          final funcKind = funcEntry['kind'] as String? ?? '';
-
-          // Skip synthetic FFI helpers, constructors, setters, private
-          if (funcName.startsWith('#')) continue;
-          if (funcName.startsWith('_')) continue;
-          if (funcName.startsWith('set:')) continue;
-          if (funcName.contains('=')) continue; // setter
-          if (funcName == className) continue; // constructor
-
-          // Strategy 1: Explicit get: prefix
-          if (funcName.startsWith('get:')) {
-            final name = funcName.substring(4);
-            if (!getterNames.contains(name)) getterNames.add(name);
-            continue;
+          // Detect #offsetOf entries: "id#offsetOf" → field "id"
+          if (funcName.endsWith('#offsetOf')) {
+            final fieldName = funcName.substring(
+                0, funcName.length - '#offsetOf'.length);
+            offsetOfNames.add(fieldName);
+            _log('      #offsetOf → field: "$fieldName"');
           }
 
-          // Strategy 2: kind == 'GetterFunction' or similar
-          if (funcKind.contains('Getter') || funcKind.contains('getter')) {
-            if (!getterNames.contains(funcName)) getterNames.add(funcName);
-            continue;
-          }
-
-          // Strategy 3: Simple name matching — any public non-constructor
-          // non-setter function that matches a likely field name pattern
-          // (lowercase start, no special characters)
-          if (funcName.isNotEmpty &&
-              funcName[0].toLowerCase() == funcName[0] &&
-              !funcName.contains(':') &&
-              !funcName.contains('.')) {
-            if (!getterNames.contains(funcName)) getterNames.add(funcName);
+          // Detect setters: "id=" → field "id"
+          if (funcName.endsWith('=') && !funcName.startsWith('_')) {
+            final fieldName = funcName.substring(0, funcName.length - 1);
+            setterNames.add(fieldName);
           }
         }
       }
     }
 
-    // Also collect from Class.fields (some structs keep fields visible)
+    _log('    #offsetOf fields: $offsetOfNames');
+    _log('    setter fields: $setterNames');
+
+    // ── Determine field names ──
+    // Priority 1: #offsetOf entries (authoritative — FFI transformer signal)
+    // Priority 2: Class.fields (for structs that keep field declarations)
+    // Priority 3: setter-matching (if name= exists, name is a field)
+    List<String> fieldNames;
+
+    if (offsetOfNames.isNotEmpty) {
+      // Use #offsetOf as authoritative field list
+      fieldNames = offsetOfNames.toList();
+      _log('    Using #offsetOf-based field list: $fieldNames');
+    } else {
+      // Fallback: use Class.fields + setter matching
+      fieldNames = <String>[];
+
+      // From Class.fields
+      for (final fieldRef in cls.fields ?? <FieldRef>[]) {
+        final name = fieldRef.name ?? '';
+        if (name.isEmpty) continue;
+        if (fieldRef.isStatic == true || fieldRef.isConst == true) continue;
+        if (name.startsWith('#') || name.startsWith('_')) continue;
+        if (!fieldNames.contains(name)) fieldNames.add(name);
+      }
+
+      // From setter matching (filter by setter existence)
+      if (fieldNames.isEmpty) {
+        for (final setter in setterNames) {
+          if (!setter.contains('.') &&
+              !setter.contains('#') &&
+              allFuncNames.contains(setter)) {
+            if (!fieldNames.contains(setter)) fieldNames.add(setter);
+          }
+        }
+      }
+
+      _log('    Using fallback field list: $fieldNames');
+    }
+
+    // Log Class.fields for diagnosis
     _log('    Class $className fields:');
     for (final fieldRef in cls.fields ?? <FieldRef>[]) {
       final name = fieldRef.name ?? '?';
@@ -744,33 +770,21 @@ class VmServiceConnection {
       final isConst = fieldRef.isConst ?? false;
       _log('      "$name" type=$typeName '
           'static=$isStatic const=$isConst');
-
-      if (isStatic || isConst) continue;
-      if (name.startsWith('#') || name.startsWith('_')) continue;
-      if (!getterNames.contains(name)) {
-        getterNames.add(name);
-      }
     }
 
-    _log('    Field getters found: $getterNames');
+    if (fieldNames.isEmpty) {
+      _log('    ✗ No fields found for $className');
+      return (fields: <StructField>[], totalSize: 0);
 
-    if (getterNames.isEmpty) {
-      _log('    ✗ No field getters found for $className');
-      return [];
     }
 
-    // ── Step 2: Get total struct size via sizeOf<T>() ──
-    // Must evaluate in the ROOT library (which imports dart:ffi),
-    // not the struct's own library
+    // ── Evaluate sizeOf<T>() ──
     int totalSize = 0;
     final rootLibId = await _getRootLibraryId();
     if (rootLibId != null) {
       try {
         final sizeResult = await _service!.evaluate(
-          _isolateId!,
-          rootLibId,
-          'sizeOf<$className>()',
-        );
+          _isolateId!, rootLibId, 'sizeOf<$className>()');
         if (sizeResult is InstanceRef && sizeResult.valueAsString != null) {
           totalSize = int.tryParse(sizeResult.valueAsString!) ?? 0;
           _log('    sizeOf<$className>() = $totalSize');
@@ -780,35 +794,60 @@ class VmServiceConnection {
       }
     }
 
-    // ── Step 3: Get field types ──
-    // Try reading @pragma metadata for type info
-    final pragmaTypes = await _readPragmaFieldTypes(cls);
-    if (pragmaTypes.isNotEmpty) {
-      _log('    @pragma types: $pragmaTypes');
+    // ── Evaluate #offsetOf for each field ──
+    final evaluatedOffsets = <String, int>{};
+    if (rootLibId != null && offsetOfNames.isNotEmpty) {
+      for (final fieldName in fieldNames) {
+        try {
+          // The #offsetOf getter is a top-level-like function on the struct
+          // Try evaluating it via the class
+          final offsetExpr = '$className().${fieldName}';
+          // Actually, #offsetOf is a static getter, try direct evaluation
+          // The function name is "id#offsetOf" — we need to call it
+          // Try: evaluating the #offsetOf getter via the class library
+          final libId = cls.library?.id;
+          if (libId != null) {
+            final result = await _service!.evaluate(
+              _isolateId!, libId,
+              '${className}.#${fieldName}#offsetOf',
+            );
+            if (result is InstanceRef && result.valueAsString != null) {
+              final offset = int.tryParse(result.valueAsString!) ?? -1;
+              if (offset >= 0) {
+                evaluatedOffsets[fieldName] = offset;
+                _log('    $fieldName#offsetOf = $offset');
+              }
+            }
+          }
+        } catch (e) {
+          _log('    $fieldName#offsetOf eval failed: $e');
+        }
+      }
     }
 
-    // ── Step 4: Build field layout ──
+    // ── Build field layout ──
     final fields = <StructField>[];
-    int offset = 0;
+    int computedOffset = 0;
 
-    for (int i = 0; i < getterNames.length; i++) {
-      final name = getterNames[i];
+    for (int i = 0; i < fieldNames.length; i++) {
+      final name = fieldNames[i];
 
-      // Determine type: pragma > class field declared type > Unknown
-      String typeName;
-      if (i < pragmaTypes.length) {
-        typeName = pragmaTypes[i];
-      } else {
-        typeName = _getFieldDeclaredType(cls, name);
-      }
-
+      // Get type from Class.fields declared type
+      String typeName = _getFieldDeclaredType(cls, name);
       final mapped = _mapToFfiType(typeName);
       typeName = mapped.typeName;
       int size = mapped.size;
 
-      // Alignment
-      if (size > 0 && offset % size != 0) {
-        offset = ((offset ~/ size) + 1) * size;
+      // Use evaluated offset if available, otherwise compute
+      int offset;
+      if (evaluatedOffsets.containsKey(name)) {
+        offset = evaluatedOffsets[name]!;
+      } else {
+        // Compute with alignment
+        if (size > 0 && computedOffset % size != 0) {
+          computedOffset = ((computedOffset ~/ size) + 1) * size;
+        }
+        offset = computedOffset;
       }
 
       fields.add(StructField(
@@ -818,48 +857,27 @@ class VmServiceConnection {
         size: size,
       ));
 
-      offset += size;
+      computedOffset = offset + size;
     }
 
     // Cross-check with sizeOf
-    if (totalSize > 0 && offset != totalSize) {
-      _log('    ⚠ Size mismatch: computed=$offset vs sizeOf=$totalSize');
+    if (totalSize > 0 && computedOffset != totalSize) {
+      _log('    ⚠ Size mismatch: computed=$computedOffset vs '
+          'sizeOf=$totalSize');
+      // If we have a size mismatch but valid sizeOf, trust sizeOf
+      // for the struct total size (used for memory reading)
     }
 
-    return fields;
-  }
-
-  /// Read @pragma('vm:ffi:struct-fields') metadata to get field type list.
-  Future<List<String>> _readPragmaFieldTypes(Class cls) async {
-    if (_service == null || _isolateId == null) return [];
-
-    try {
-      // The class metadata annotations may contain the pragma
-      final clsJson = cls.json;
-      final metadata = clsJson?['metadata'] as List?;
-      if (metadata != null && metadata.isNotEmpty) {
-        _log('    Class has ${metadata.length} metadata annotations');
-        for (final entry in metadata) {
-          if (entry is Map && entry['id'] != null) {
-            try {
-              final obj = await _service!.getObject(
-                _isolateId!,
-                entry['id'] as String,
-              );
-              final json = obj.json;
-              // Look for the ffi struct-fields pragma value
-              if (json != null) {
-                _log('    metadata obj type: ${json['type']}');
-              }
-            } catch (_) {}
-          }
-        }
-      }
-    } catch (e) {
-      _log('    Pragma read error: $e');
+    // Use totalSize from sizeOf if available, else computed
+    final finalSize = totalSize > 0 ? totalSize : computedOffset;
+    _log('    ✓ Built layout: ${fields.length} fields, '
+        'totalSize=$finalSize');
+    for (final f in fields) {
+      _log('      ${f.name}: ${f.typeName} '
+          'offset=${f.offset} size=${f.size}');
     }
 
-    return [];
+    return (fields: fields, totalSize: finalSize);
   }
 
   /// Get the declared type name for a field from class inspection.
@@ -902,6 +920,9 @@ class VmServiceConnection {
       'Double' || 'double' => (typeName: 'Double', size: 8),
       'Pointer' => (typeName: 'Pointer', size: 8),
       _ when rawType.startsWith('Pointer') => (typeName: rawType, size: 8),
+      // FFI transformer internal type names (X0, X1 etc.)
+      // X0 is typically Double in the FFI-transformed code
+      'X0' => (typeName: 'Double', size: 8),
       _ => (typeName: rawType, size: 8), // Default to pointer size
     };
   }

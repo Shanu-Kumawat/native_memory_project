@@ -276,6 +276,8 @@ class VmServiceConnection {
               final pointerData = await _tryExtractPointer(
                 variable.name ?? 'unknown',
                 value,
+                scriptId: frame.location?.script?.id,
+                tokenPos: variable.declarationTokenPos,
               );
               if (pointerData != null) {
                 pointers.add(pointerData);
@@ -365,8 +367,10 @@ class VmServiceConnection {
   /// Try to extract pointer data from an InstanceRef.
   Future<PointerData?> _tryExtractPointer(
     String varName,
-    InstanceRef ref,
-  ) async {
+    InstanceRef ref, {
+    String? scriptId,
+    int? tokenPos,
+  }) async {
     final className = ref.classRef?.name ?? '';
 
     // Check if this is a Pointer class via class name
@@ -511,7 +515,37 @@ class VmServiceConnection {
         } catch (_) {}
       }
 
-      // Strategy 3: Name-based heuristic (last resort)
+      // Strategy 3: Source extraction via declaration position
+      if (nativeType == 'Unknown' && scriptId != null) {
+        try {
+          final script = await _service!.getObject(_isolateId!, scriptId) as Script;
+          final source = script.source;
+          if (source != null) {
+            final patterns = [
+              RegExp(r'Pointer<\s*([a-zA-Z0-9_<>]+)\s*>\s+' + RegExp.escape(varName)),
+              RegExp(RegExp.escape(varName) + r'\s*=\s*(?:[a-zA-Z0-9_\.]+)?(?:calloc|malloc)\s*<\s*([a-zA-Z0-9_<>]+)\s*>'),
+              RegExp(RegExp.escape(varName) + r'\s*=\s*[^;]+\.cast\s*<\s*([a-zA-Z0-9_<>]+)\s*>'),
+            ];
+            
+            for (final pattern in patterns) {
+              final match = pattern.firstMatch(source);
+              if (match != null) {
+                final extract = match.group(1) ?? match.group(2) ?? match.group(3);
+                if (extract != null && extract != 'Never') {
+                  nativeType = extract.trim();
+                  typeSource = 'source code';
+                  _log('    ✓ Type resolved via source: $nativeType');
+                  break;
+                }
+              }
+            }
+          }
+        } catch (e) {
+          _log('    ✗ Source extraction failed: $e');
+        }
+      }
+
+      // Strategy 4: Name-based heuristic (last resort)
       if (nativeType == 'Unknown') {
         nativeType = _inferTypeByName(varName);
         if (nativeType != 'Unknown') {
@@ -651,6 +685,13 @@ class VmServiceConnection {
     if (typeName == 'Unknown') {
       _log('    Cannot extract fields: type is Unknown');
       return (fields: <StructField>[], totalSize: 0);
+    }
+
+    // Handle internal primitive FFI types mapping
+    final primitiveLayout = _primitiveLayout(typeName);
+    if (primitiveLayout != null) {
+      _log('    ✓ Layout generated for primitive type $typeName');
+      return primitiveLayout;
     }
 
     try {
@@ -1313,5 +1354,20 @@ class VmServiceConnection {
         }
       }
     }
+  }
+
+  /// Creates a single-field layout for known primitive FFI types.
+  ({List<StructField> fields, int totalSize})? _primitiveLayout(String typeName) {
+    if (typeName == 'Pointer<Pointer>' || typeName.startsWith('Pointer<Pointer')) {
+      return (fields: [StructField(name: 'value', typeName: 'Pointer', offset: 0, size: 8)], totalSize: 8);
+    }
+    final mapped = _mapToFfiType(typeName);
+    if (const {'Int8', 'Int16', 'Int32', 'Int64', 'Uint8', 'Uint16', 'Uint32', 'Uint64', 'Float', 'Double'}.contains(mapped.typeName)) {
+      return (fields: [StructField(name: 'value', typeName: mapped.typeName, offset: 0, size: mapped.size)], totalSize: mapped.size);
+    }
+    if (typeName.startsWith('Pointer<')) {
+      return (fields: [StructField(name: 'value', typeName: 'Pointer', offset: 0, size: 8)], totalSize: 8);
+    }
+    return null;
   }
 }

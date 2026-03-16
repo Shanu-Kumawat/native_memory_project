@@ -323,14 +323,26 @@ class VmServiceConnection {
       // Step 4: Read native memory for all found pointers
       for (int i = 0; i < pointers.length; i++) {
         final p = pointers[i];
-        if (p.address != 0 && p.structSize > 0) {
-          _log('Reading ${p.structSize} bytes at 0x${p.address.toRadixString(16)} '
+        if (p.address != 0) {
+          // Read structSize bytes if known, otherwise 64 bytes for untyped pointers
+          final readSize = p.structSize > 0 ? p.structSize : 64;
+          _log('Reading $readSize bytes at 0x${p.address.toRadixString(16)} '
               'for ${p.variableName}...');
-          final bytes = await readNativeMemory(p.address, p.structSize);
+          final bytes = await readNativeMemory(p.address, readSize);
           if (bytes != null) {
-            pointers[i] = p.copyWith(rawBytes: bytes);
+            // For unknown pointers, update structSize to bytes read
+            pointers[i] = p.copyWith(
+              rawBytes: bytes,
+              structSize: p.structSize > 0 ? null : bytes.length,
+            );
             _log('  ✓ Read ${bytes.length} bytes successfully');
           } else {
+            // Memory read failed — set error so UI shows it
+            if (p.nativeType == 'Unknown') {
+              pointers[i] = p.copyWith(
+                error: 'Memory read failed: address may be invalid or unmapped',
+              );
+            }
             _log('  ✗ Memory read failed or unavailable');
           }
         }
@@ -905,8 +917,18 @@ class VmServiceConnection {
       return (fields: bestLayout, totalSize: totalSize);
     }
 
-    // Fallback: use default type mapping with evaluated offsets
+    // Fallback: use default type mapping with evaluated offsets.
+    // When we have #offsetOf data, compute sizes from offset gaps
+    // instead of relying on default type sizes.
     _log('    Using default type mapping (no sizeOf reconciliation)');
+
+    // Check for union layout: all fields at offset 0
+    final isUnion = evaluatedOffsets.isNotEmpty &&
+        evaluatedOffsets.values.every((o) => o == 0);
+    if (isUnion) {
+      _log('    Detected union layout (all offsets = 0)');
+    }
+
     final fields = <StructField>[];
     int computedOffset = 0;
 
@@ -929,6 +951,36 @@ class VmServiceConnection {
         offset = computedOffset;
       }
 
+      // ── Refine size using offset gaps ──
+      // When we have #offsetOf data for consecutive fields, we can
+      // compute the exact field size from the gap between offsets.
+      // This handles packed structs, nested structs, and arrays correctly.
+      if (evaluatedOffsets.containsKey(name)) {
+        int inferredSize = size; // fallback to default
+
+        if (isUnion && totalSize > 0) {
+          // Union: each field fits within sizeOf
+          inferredSize = totalSize.clamp(0, size);
+        } else if (i + 1 < fieldNames.length &&
+            evaluatedOffsets.containsKey(fieldNames[i + 1])) {
+          // Size = next field's offset - this field's offset
+          inferredSize = evaluatedOffsets[fieldNames[i + 1]]! - offset;
+        } else if (totalSize > 0) {
+          // Last field: size = sizeOf - this offset
+          inferredSize = totalSize - offset;
+        }
+
+        if (inferredSize > 0 && inferredSize != size) {
+          // Look up the right type name for the inferred size
+          final corrected = _inferTypeFromSize(rawType, inferredSize,
+              _structClassNames);
+          typeName = corrected.typeName;
+          size = corrected.size;
+          _log('      $name: offset gap → size=$size (was ${mapped.size}), '
+              'type=$typeName');
+        }
+      }
+
       fields.add(StructField(
         name: name,
         typeName: typeName,
@@ -936,10 +988,12 @@ class VmServiceConnection {
         size: size,
       ));
 
-      computedOffset = offset + size;
+      if (!isUnion) {
+        computedOffset = offset + size;
+      }
     }
 
-    if (totalSize > 0 && computedOffset != totalSize) {
+    if (totalSize > 0 && !isUnion && computedOffset != totalSize) {
       _log('    ⚠ Size mismatch: computed=$computedOffset vs '
           'sizeOf=$totalSize');
     }
@@ -1109,5 +1163,40 @@ class VmServiceConnection {
       'X0' => (typeName: 'Double', size: 8),
       _ => (typeName: rawType, size: 8), // Default to pointer size
     };
+  }
+
+  /// Infer the correct FFI type from a Dart type and a known byte size.
+  ///
+  /// Used when #offsetOf gaps reveal the actual field size, which
+  /// may differ from the default mapping (e.g., int → Int32 by default,
+  /// but offset gap says 1 byte → must be Int8).
+  ({String typeName, int size}) _inferTypeFromSize(
+      String dartType, int size, List<String> structClassNames) {
+    // If this is a known struct class, it's a nested struct field
+    if (structClassNames.contains(dartType)) {
+      return (typeName: dartType, size: size);
+    }
+
+    // For ambiguous Dart types, pick the FFI type matching the size
+    if (dartType == 'int') {
+      return switch (size) {
+        1 => (typeName: 'Int8', size: 1),
+        2 => (typeName: 'Int16', size: 2),
+        4 => (typeName: 'Int32', size: 4),
+        8 => (typeName: 'Int64', size: 8),
+        _ => (typeName: 'Int32', size: size), // Keep discovered size
+      };
+    }
+    if (dartType == 'double') {
+      return switch (size) {
+        4 => (typeName: 'Float', size: 4),
+        8 => (typeName: 'Double', size: 8),
+        _ => (typeName: 'Double', size: size),
+      };
+    }
+
+    // For non-ambiguous types, just update the size
+    final mapped = _mapToFfiType(dartType);
+    return (typeName: mapped.typeName, size: size);
   }
 }

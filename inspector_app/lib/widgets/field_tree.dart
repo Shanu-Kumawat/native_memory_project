@@ -23,6 +23,43 @@ class FieldTreeView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (fields.isEmpty) {
+      // If we have raw bytes but no struct fields, show as raw memory
+      if (rawBytes != null && rawBytes!.isNotEmpty) {
+        return Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.info_outline, size: 14,
+                      color: InspectorTheme.textDim),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Untyped pointer — showing ${rawBytes!.length} raw bytes',
+                    style: InspectorTheme.monoSmall.copyWith(
+                      color: InspectorTheme.textDim,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: InspectorTheme.background,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: InspectorTheme.border),
+                ),
+                child: SelectableText(
+                  _formatRawBytes(rawBytes!),
+                  style: InspectorTheme.monoSmall.copyWith(fontSize: 11),
+                ),
+              ),
+            ],
+          ),
+        );
+      }
       return Padding(
         padding: const EdgeInsets.all(16),
         child: Text(
@@ -95,6 +132,22 @@ class FieldTreeView extends StatelessWidget {
           ),
       ],
     );
+  }
+
+  /// Format raw bytes as a hex string with address markers (8 bytes per line).
+  static String _formatRawBytes(List<int> bytes) {
+    final buf = StringBuffer();
+    for (int i = 0; i < bytes.length; i += 8) {
+      final end = (i + 8).clamp(0, bytes.length);
+      final hex = bytes.sublist(i, end)
+          .map((b) => b.toRadixString(16).toUpperCase().padLeft(2, '0'))
+          .join(' ');
+      final ascii = bytes.sublist(i, end)
+          .map((b) => b >= 32 && b < 127 ? String.fromCharCode(b) : '·')
+          .join();
+      buf.writeln('+${i.toRadixString(16).padLeft(4, '0')}  $hex${' ' * (24 - hex.length)}  $ascii');
+    }
+    return buf.toString().trimRight();
   }
 }
 

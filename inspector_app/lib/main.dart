@@ -1,7 +1,7 @@
-/// Native Memory Inspector — GSoC Sample Project
-///
-/// A Flutter desktop application that inspects Pointer<T> objects
-/// through the Dart VM Service Protocol.
+// Native Memory Inspector — GSoC Sample Project
+//
+// A Flutter desktop application that inspects Pointer<T> objects
+// through the Dart VM Service Protocol.
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -9,8 +9,9 @@ import 'package:google_fonts/google_fonts.dart';
 import 'models/pointer_data.dart' as models;
 import 'services/vm_service_connection.dart';
 import 'theme.dart';
-import 'widgets/connection_panel.dart';
-import 'widgets/pointer_card.dart';
+import 'widgets/detail_panel.dart';
+import 'widgets/pointer_sidebar.dart';
+import 'widgets/status_bar.dart';
 
 void main() {
   runApp(const NativeMemoryInspectorApp());
@@ -37,12 +38,12 @@ class InspectorPage extends StatefulWidget {
   State<InspectorPage> createState() => _InspectorPageState();
 }
 
-class _InspectorPageState extends State<InspectorPage>
-    with SingleTickerProviderStateMixin {
+class _InspectorPageState extends State<InspectorPage> {
   final _vmConnection = VmServiceConnection();
   var _state = const models.InspectorState();
 
-  void _updateState(models.InspectorState Function(models.InspectorState) fn) {
+  void _updateState(
+      models.InspectorState Function(models.InspectorState) fn) {
     setState(() => _state = fn(_state));
   }
 
@@ -80,13 +81,39 @@ class _InspectorPageState extends State<InspectorPage>
       (s) => s.copyWith(
         connectionState: models.ConnectionState.disconnected,
         pointers: [],
+        selectedPointerIndex: -1,
+        navigationHistory: [],
       ),
     );
   }
 
   Future<void> _scanForPointers() async {
     final pointers = await _vmConnection.findPointers();
-    _updateState((s) => s.copyWith(pointers: pointers));
+    _updateState((s) => s.copyWith(
+      pointers: pointers,
+      selectedPointerIndex: pointers.isNotEmpty ? 0 : -1,
+    ));
+  }
+
+  void _selectPointer(int index) {
+    final history = List<int>.from(_state.navigationHistory);
+    if (_state.selectedPointerIndex >= 0) {
+      history.add(_state.selectedPointerIndex);
+    }
+    _updateState((s) => s.copyWith(
+      selectedPointerIndex: index,
+      navigationHistory: history,
+    ));
+  }
+
+  void _navigateBack() {
+    if (!_state.canGoBack) return;
+    final history = List<int>.from(_state.navigationHistory);
+    final prev = history.removeLast();
+    _updateState((s) => s.copyWith(
+      selectedPointerIndex: prev,
+      navigationHistory: history,
+    ));
   }
 
   @override
@@ -101,15 +128,52 @@ class _InspectorPageState extends State<InspectorPage>
       body: Column(
         children: [
           _titleBar(),
-          if (_state.connectionState != models.ConnectionState.connected)
-            _connectionSection()
-          else
-            _connectedHeader(),
           Expanded(
-            child: _state.pointers.isEmpty
-                ? _emptyState()
-                : _pointerList(),
+            child: Row(
+              children: [
+                // ─── Sidebar ───
+                SizedBox(
+                  width: 260,
+                  child: PointerSidebar(
+                    pointers: _state.pointers,
+                    selectedIndex: _state.selectedPointerIndex,
+                    onSelect: _selectPointer,
+                    isConnected: _state.connectionState ==
+                        models.ConnectionState.connected,
+                    onConnect: _connect,
+                    onDisconnect: _disconnect,
+                    onRescan: _scanForPointers,
+                    isConnecting: _state.connectionState ==
+                        models.ConnectionState.connecting,
+                    errorMessage: _state.connectionState ==
+                            models.ConnectionState.error
+                        ? _state.errorMessage
+                        : null,
+                  ),
+                ),
+                // ─── Divider ───
+                Container(
+                  width: 1,
+                  color: InspectorTheme.border,
+                ),
+                // ─── Detail panel ───
+                Expanded(
+                  child: _state.selectedPointer != null
+                      ? DetailPanel(
+                          key: ValueKey(_state.selectedPointerIndex),
+                          pointer: _state.selectedPointer!,
+                          allPointers: _state.pointers,
+                          onNavigate: _selectPointer,
+                          canGoBack: _state.canGoBack,
+                          onGoBack: _navigateBack,
+                        )
+                      : _emptyState(),
+                ),
+              ],
+            ),
           ),
+          // ─── Status bar ───
+          StatusBar(state: _state),
         ],
       ),
     );
@@ -117,38 +181,28 @@ class _InspectorPageState extends State<InspectorPage>
 
   Widget _titleBar() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: const BoxDecoration(
         color: InspectorTheme.surface,
-        border: Border(
-          bottom: BorderSide(color: InspectorTheme.border),
-        ),
+        border: Border(bottom: BorderSide(color: InspectorTheme.border)),
       ),
       child: Row(
         children: [
           // Logo
           Container(
-            padding: const EdgeInsets.all(6),
+            padding: const EdgeInsets.all(5),
             decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  InspectorTheme.accent.withValues(alpha: 0.2),
-                  InspectorTheme.purple.withValues(alpha: 0.2),
-                ],
-              ),
-              borderRadius: BorderRadius.circular(8),
+              color: InspectorTheme.accent.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(6),
             ),
-            child: const Icon(
-              Icons.memory,
-              size: 20,
-              color: InspectorTheme.accent,
-            ),
+            child: const Icon(Icons.memory, size: 16,
+                color: InspectorTheme.accent),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Text(
             'Native Memory Inspector',
             style: GoogleFonts.inter(
-              fontSize: 16,
+              fontSize: 14,
               fontWeight: FontWeight.w700,
               color: InspectorTheme.text,
               letterSpacing: -0.3,
@@ -156,13 +210,13 @@ class _InspectorPageState extends State<InspectorPage>
           ),
           const SizedBox(width: 8),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
             decoration: BoxDecoration(
-              color: InspectorTheme.warning.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(4),
+              color: InspectorTheme.warning.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(3),
             ),
             child: Text(
-              'GSoC Sample',
+              'GSoC',
               style: InspectorTheme.monoSmall.copyWith(
                 color: InspectorTheme.warning,
                 fontSize: 9,
@@ -171,13 +225,10 @@ class _InspectorPageState extends State<InspectorPage>
             ),
           ),
           const Spacer(),
-          // Connection status
+          // Connection indicator
           _connectionDot(),
-          const SizedBox(width: 8),
-          Text(
-            _connectionLabel(),
-            style: InspectorTheme.label,
-          ),
+          const SizedBox(width: 6),
+          Text(_connectionLabel(), style: InspectorTheme.label.copyWith(fontSize: 10)),
         ],
       ),
     );
@@ -191,13 +242,9 @@ class _InspectorPageState extends State<InspectorPage>
       models.ConnectionState.disconnected => InspectorTheme.textDim,
     };
     return Container(
-      width: 8,
-      height: 8,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: color,
-        boxShadow: [BoxShadow(color: color.withValues(alpha: 0.4), blurRadius: 6)],
-      ),
+      width: 6,
+      height: 6,
+      decoration: BoxDecoration(shape: BoxShape.circle, color: color),
     );
   }
 
@@ -211,113 +258,27 @@ class _InspectorPageState extends State<InspectorPage>
     };
   }
 
-  Widget _connectionSection() {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      child: Card(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-              child: Text(
-                'Connect to VM Service',
-                style: InspectorTheme.heading,
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Text(
-                'Enter the WebSocket URI of a running Dart VM with --enable-vm-service',
-                style: InspectorTheme.label,
-              ),
-            ),
-            ConnectionPanel(
-              onConnect: _connect,
-              isConnecting: _state.connectionState ==
-                  models.ConnectionState.connecting,
-              errorMessage: _state.connectionState ==
-                      models.ConnectionState.error
-                  ? _state.errorMessage
-                  : null,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _connectedHeader() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: InspectorTheme.border)),
-      ),
-      child: Row(
-        children: [
-          Text(
-            '${_state.pointers.length} pointer(s) found',
-            style: InspectorTheme.label,
-          ),
-          const Spacer(),
-          TextButton.icon(
-            onPressed: _scanForPointers,
-            icon: const Icon(Icons.refresh, size: 14),
-            label: Text('Rescan', style: InspectorTheme.label),
-          ),
-          TextButton.icon(
-            onPressed: _disconnect,
-            icon: const Icon(Icons.power_off, size: 14, color: InspectorTheme.error),
-            label: Text(
-              'Disconnect',
-              style: InspectorTheme.label.copyWith(
-                color: InspectorTheme.error,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _emptyState() {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            Icons.search_off,
-            size: 48,
-            color: InspectorTheme.textDim.withValues(alpha: 0.4),
+            _state.connectionState == models.ConnectionState.connected
+                ? Icons.search_off
+                : Icons.link_off,
+            size: 36,
+            color: InspectorTheme.textDim.withValues(alpha: 0.3),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
           Text(
-            'No Pointer<T> variables found',
-            style: InspectorTheme.heading.copyWith(
-              color: InspectorTheme.textDim,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Make sure your program uses dart:ffi Pointer allocations\nand is paused at a breakpoint.',
+            _state.connectionState == models.ConnectionState.connected
+                ? 'No pointer selected'
+                : 'Connect to a Dart VM to start inspecting',
             style: InspectorTheme.label,
-            textAlign: TextAlign.center,
           ),
         ],
       ),
-    );
-  }
-
-  Widget _pointerList() {
-    return ListView.builder(
-      padding: const EdgeInsets.all(20),
-      itemCount: _state.pointers.length,
-      itemBuilder: (context, index) {
-        return PointerCard(
-          data: _state.pointers[index],
-          initiallyExpanded: index == 0,
-        );
-      },
     );
   }
 }

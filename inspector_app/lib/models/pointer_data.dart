@@ -1,4 +1,7 @@
-/// Data models for native pointer inspection.
+// Data models for native pointer inspection.
+
+/// Category for grouping pointers in the sidebar.
+enum PointerCategory { struct, union, advanced, raw, error }
 
 /// Represents a single field within a native struct.
 class StructField {
@@ -8,15 +11,36 @@ class StructField {
   final int size;
   final dynamic value;
   final bool isReadable;
+  final bool isPadding;
+  final List<StructField>? children;
+  bool isExpanded;
 
-  const StructField({
+  StructField({
     required this.name,
     required this.typeName,
     required this.offset,
     required this.size,
     this.value,
     this.isReadable = true,
+    this.isPadding = false,
+    this.children,
+    this.isExpanded = false,
   });
+
+  bool get hasChildren => children != null && children!.isNotEmpty;
+  bool get isPointer => typeName.startsWith('Pointer');
+  bool get isArray => typeName.startsWith('Array');
+  bool get isStruct =>
+      !isPadding &&
+      !isPointer &&
+      !isArray &&
+      !_primitiveTypes.contains(typeName);
+
+  static const _primitiveTypes = {
+    'Int8', 'Int16', 'Int32', 'Int64',
+    'Uint8', 'Uint16', 'Uint32', 'Uint64',
+    'Float', 'Double', 'Bool',
+  };
 }
 
 /// Represents all the information about a native pointer.
@@ -42,7 +66,30 @@ class PointerData {
   bool get isNull => address == 0;
   bool get hasError => error != null;
   bool get hasRawBytes => rawBytes != null && rawBytes!.isNotEmpty;
+  bool get hasFields => fields.where((f) => !f.isPadding).isNotEmpty;
+  bool get hasPointerFields =>
+      fields.any((f) => f.typeName.startsWith('Pointer'));
   String get addressHex => '0x${address.toRadixString(16).padLeft(12, '0')}';
+
+  PointerCategory get category {
+    if (hasError || (nativeType == 'Unknown' && !hasRawBytes)) {
+      return PointerCategory.error;
+    }
+    if (nativeType == 'Unknown') return PointerCategory.raw;
+    if (nativeType.contains('Union') || _unionTypes.contains(nativeType)) {
+      return PointerCategory.union;
+    }
+    if (fields.any((f) => f.isArray) ||
+        nativeType.contains('Buffer') ||
+        nativeType.contains('Array')) {
+      return PointerCategory.advanced;
+    }
+    return PointerCategory.struct;
+  }
+
+  // Track known union types by checking if multiple fields share offset 0
+  static final Set<String> _unionTypes = {};
+  static void markAsUnion(String typeName) => _unionTypes.add(typeName);
 
   PointerData copyWith({
     String? variableName,
@@ -81,6 +128,8 @@ class InspectorState {
   final String? errorMessage;
   final String? vmName;
   final String? vmVersion;
+  final int selectedPointerIndex;
+  final List<int> navigationHistory;
 
   const InspectorState({
     this.connectionState = ConnectionState.disconnected,
@@ -89,7 +138,22 @@ class InspectorState {
     this.errorMessage,
     this.vmName,
     this.vmVersion,
+    this.selectedPointerIndex = -1,
+    this.navigationHistory = const [],
   });
+
+  PointerData? get selectedPointer =>
+      selectedPointerIndex >= 0 && selectedPointerIndex < pointers.length
+          ? pointers[selectedPointerIndex]
+          : null;
+
+  bool get canGoBack => navigationHistory.isNotEmpty;
+
+  int get readableCount =>
+      pointers.where((p) => p.hasRawBytes && !p.hasError).length;
+  int get errorCount => pointers.where((p) => p.hasError).length;
+  int get totalBytesRead => pointers.fold<int>(
+      0, (sum, p) => sum + (p.rawBytes?.length ?? 0));
 
   InspectorState copyWith({
     ConnectionState? connectionState,
@@ -98,6 +162,8 @@ class InspectorState {
     String? errorMessage,
     String? vmName,
     String? vmVersion,
+    int? selectedPointerIndex,
+    List<int>? navigationHistory,
   }) {
     return InspectorState(
       connectionState: connectionState ?? this.connectionState,
@@ -106,6 +172,9 @@ class InspectorState {
       errorMessage: errorMessage,
       vmName: vmName ?? this.vmName,
       vmVersion: vmVersion ?? this.vmVersion,
+      selectedPointerIndex:
+          selectedPointerIndex ?? this.selectedPointerIndex,
+      navigationHistory: navigationHistory ?? this.navigationHistory,
     );
   }
 }

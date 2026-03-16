@@ -165,16 +165,64 @@ class VmServiceConnection {
   String _inferTypeByName(String varName) {
     final lowerVar = varName.toLowerCase().replaceAll(RegExp(r'[0-9]+$'), '');
 
+    // Check against known struct class names first
     for (final className in _structClassNames) {
       if (className.toLowerCase() == lowerVar) return className;
       if (lowerVar.endsWith(className.toLowerCase())) return className;
       if (lowerVar.contains(className.toLowerCase())) return className;
     }
 
+    // Detect primitive FFI types from variable name patterns
+    // e.g., innerInt → Int32, rawBuf/bufData → Uint8, ptrToPtr → Pointer
+    final primitiveMatch = _inferPrimitiveTypeFromName(varName);
+    if (primitiveMatch != null) return primitiveMatch;
+
     // If only one struct class exists, it's likely the target
     if (_structClassNames.length == 1) return _structClassNames.first;
 
     return 'Unknown';
+  }
+
+  /// Try to infer a primitive FFI type from a variable name.
+  /// Returns the FFI type name (e.g., 'Int32', 'Uint8', 'Pointer')
+  /// or null if no match.
+  String? _inferPrimitiveTypeFromName(String varName) {
+    final lower = varName.toLowerCase();
+
+    // Pointer-to-pointer patterns: ptrToPtr, doublePtr, ptrPtr
+    if (lower.contains('ptrtoptr') || lower.contains('ptrtop') ||
+        lower.contains('doubleptr') || lower.contains('ptrptr')) {
+      return 'Pointer<Pointer>';
+    }
+
+    // Integer patterns: innerInt, myInt32, intValue
+    if (lower.contains('int64') || lower.contains('long')) return 'Int64';
+    if (lower.contains('int32') || lower.endsWith('int') ||
+        lower.startsWith('int') || lower.contains('inner') &&
+        lower.contains('int')) {
+      return 'Int32';
+    }
+    if (lower.contains('int16') || lower.contains('short')) return 'Int16';
+    if (lower.contains('int8') || lower.contains('byte') &&
+        !lower.contains('buf')) {
+      return 'Int8';
+    }
+
+    // Unsigned integer patterns
+    if (lower.contains('uint64')) return 'Uint64';
+    if (lower.contains('uint32')) return 'Uint32';
+    if (lower.contains('uint16')) return 'Uint16';
+    if (lower.contains('uint8') || lower.contains('rawbuf') ||
+        lower.contains('bufdata') || lower.contains('rawdata') ||
+        lower.contains('databuf')) {
+      return 'Uint8';
+    }
+
+    // Float/double patterns
+    if (lower.contains('float')) return 'Float';
+    if (lower.contains('double') || lower.contains('dbl')) return 'Double';
+
+    return null;
   }
 
   // ─── Pointer Discovery ──────────────────────────────────────────────
@@ -651,6 +699,13 @@ class VmServiceConnection {
     if (typeName == 'Unknown') {
       _log('    Cannot extract fields: type is Unknown');
       return (fields: <StructField>[], totalSize: 0);
+    }
+
+    // Handle primitive FFI types — create synthetic single-field layout
+    final primitiveLayout = _syntheticPrimitiveLayout(typeName);
+    if (primitiveLayout != null) {
+      _log('    ✓ Synthetic layout for primitive type $typeName');
+      return primitiveLayout;
     }
 
     try {
@@ -1249,7 +1304,8 @@ class VmServiceConnection {
 
   /// For Array fields, populate children with element sub-fields.
   void _populateArrayChildren(List<StructField> fields) {
-    for (final f in fields) {
+    for (int idx = 0; idx < fields.length; idx++) {
+      final f = fields[idx];
       if (f.isArray && f.size > 0) {
         // Parse element type and compute stride. e.g. "Array<Int32>" → Int32, stride 4
         final match = RegExp(r'Array<(\w+)>').firstMatch(f.typeName);
@@ -1258,7 +1314,6 @@ class VmServiceConnection {
           final stride = _mapToFfiType(elemType).size;
           if (stride > 0) {
             final count = f.size ~/ stride;
-            f.children?.clear();
             final children = <StructField>[];
             for (int i = 0; i < count; i++) {
               children.add(StructField(
@@ -1268,10 +1323,8 @@ class VmServiceConnection {
                 size: stride,
               ));
             }
-            // Use reflection-free approach: store children via the field constructor
-            // Since StructField.children is final, we need a different approach
-            // We'll set it directly since the field list is mutable
-            fields[fields.indexOf(f)] = StructField(
+            _log('    ✓ Array ${f.name}: $count elements of $elemType');
+            fields[idx] = StructField(
               name: f.name,
               typeName: f.typeName,
               offset: f.offset,
@@ -1282,5 +1335,47 @@ class VmServiceConnection {
         }
       }
     }
+  }
+
+  /// Create a synthetic layout for known primitive FFI types.
+  /// Returns null if the type isn't a recognized primitive.
+  ({List<StructField> fields, int totalSize})? _syntheticPrimitiveLayout(
+      String typeName) {
+    // Check for Pointer<Pointer> (double indirection)
+    if (typeName == 'Pointer<Pointer>' || typeName.startsWith('Pointer<Pointer')) {
+      return (
+        fields: [
+          StructField(
+            name: 'value',
+            typeName: 'Pointer',
+            offset: 0,
+            size: 8,
+          ),
+        ],
+        totalSize: 8,
+      );
+    }
+
+    // Check for known FFI primitive types
+    final mapped = _mapToFfiType(typeName);
+    if (const {
+      'Int8', 'Int16', 'Int32', 'Int64',
+      'Uint8', 'Uint16', 'Uint32', 'Uint64',
+      'Float', 'Double',
+    }.contains(mapped.typeName)) {
+      return (
+        fields: [
+          StructField(
+            name: 'value',
+            typeName: mapped.typeName,
+            offset: 0,
+            size: mapped.size,
+          ),
+        ],
+        totalSize: mapped.size,
+      );
+    }
+
+    return null; // Not a primitive type — let struct extraction handle it
   }
 }

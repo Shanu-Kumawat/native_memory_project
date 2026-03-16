@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build memory read test
-        run: gcc -o tests/test_memory_read tests/test_memory_read.c
+        run: gcc -pthread -o tests/test_memory_read tests/test_memory_read.c
 
       - name: Run memory read test
         run: ./tests/test_memory_read
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build memory read test
-        run: clang -o tests/test_memory_read tests/test_memory_read.c
+        run: clang -pthread -o tests/test_memory_read tests/test_memory_read.c
 
       - name: Run memory read test
         run: ./tests/test_memory_read

@@ -57,7 +57,6 @@ final class PackedData extends Struct {
 
   @Int32()
   external int c; // With Packed(1): offset 5 (no padding after b)
-  // Without packing: offset 8 (3 bytes padding after b)
 }
 
 // Nested struct — contains an embedded struct field.
@@ -66,7 +65,7 @@ final class Outer extends Struct {
   @Int32()
   external int header;
 
-  external Point inner; // Embedded Point struct
+  external Point inner; // Embedded Point struct (16 bytes)
 
   @Int64()
   external int footer;
@@ -80,6 +79,27 @@ final class IntOrFloat extends Union {
 
   @Float()
   external double asFloat;
+}
+
+// ═══ Advanced patterns ═══
+
+// Struct with inline array field.
+// Tests contiguous repeated field decoding inside a struct.
+final class WithArray extends Struct {
+  @Int32()
+  external int count;
+
+  @Array(4)
+  external Array<Int32> values; // 4 x Int32 = 16 bytes inline
+}
+
+// Length + pointer buffer pattern — mimics common native API patterns.
+// The struct contains a length and a pointer to a separate data buffer.
+final class Buffer extends Struct {
+  @Int32()
+  external int length;
+
+  external Pointer<Uint8> data; // Points to a separate byte buffer
 }
 
 void main() {
@@ -125,13 +145,49 @@ void main() {
   final intOrFloat = calloc<IntOrFloat>();
   intOrFloat.ref.asInt = 0x40490FDB; // IEEE 754 representation of π ≈ 3.14159
 
-  // ── Safety test pointers ──
-  // These demonstrate that the inspector handles error cases gracefully.
+  // ── Advanced patterns ──
 
-  // Invalid address (0xDEADBEEF) — should produce a clean error, no crash.
+  // Struct with inline array
+  final withArray = calloc<WithArray>();
+  withArray.ref.count = 4;
+  for (int i = 0; i < 4; i++) {
+    withArray.ref.values[i] = (i + 1) * 10; // 10, 20, 30, 40
+  }
+
+  // Pointer-to-pointer (double indirection)
+  final innerInt = calloc<Int32>();
+  innerInt.value = 12345;
+  final ptrToPtr = calloc<Pointer<Int32>>();
+  ptrToPtr.value = innerInt;
+
+  // Raw byte buffer with deterministic pattern
+  final rawBuf = calloc<Uint8>(16);
+  for (int i = 0; i < 16; i++) {
+    rawBuf[i] = 0xAA + i; // 0xAA, 0xAB, 0xAC, ...
+  }
+
+  // Length + pointer buffer struct
+  final bufData = calloc<Uint8>(8);
+  for (int i = 0; i < 8; i++) {
+    bufData[i] = i * 11; // 0, 11, 22, 33, 44, 55, 66, 77
+  }
+  final buffer = calloc<Buffer>();
+  buffer.ref
+    ..length = 8
+    ..data = bufData;
+
+  // Tagged pointer — address | 1 to simulate runtime tag bits
+  final tagTarget = calloc<Point>();
+  tagTarget.ref
+    ..x = 42.0
+    ..y = 84.0;
+  final taggedAddr = tagTarget.address | 1; // Low bit set as tag
+
+  // Safety test pointer
   final invalidPtr = Pointer<MyStruct>.fromAddress(0xDEADBEEF);
 
-  // Print info for manual verification
+  // ── Print info for manual verification ──
+
   print('── Basic Structs ──');
   print('MyStruct @ 0x${myStruct.address.toRadixString(16)}');
   print('  id:        ${myStruct.ref.id}');
@@ -170,35 +226,59 @@ void main() {
   print('  sizeOf<IntOrFloat>: ${sizeOf<IntOrFloat>()} bytes');
   print('');
 
+  print('── Advanced Patterns ──');
+  print('WithArray @ 0x${withArray.address.toRadixString(16)}');
+  print('  count: ${withArray.ref.count}');
+  print('  values: [${List.generate(4, (i) => withArray.ref.values[i]).join(', ')}]');
+  print('  sizeOf<WithArray>: ${sizeOf<WithArray>()} bytes');
+  print('');
+  print('ptrToPtr @ 0x${ptrToPtr.address.toRadixString(16)}');
+  print('  *ptrToPtr: 0x${ptrToPtr.value.address.toRadixString(16)}');
+  print('  **ptrToPtr: ${ptrToPtr.value.value}');
+  print('');
+  print('rawBuf @ 0x${rawBuf.address.toRadixString(16)}');
+  print('  bytes: ${List.generate(16, (i) => '0x${rawBuf[i].toRadixString(16)}').join(', ')}');
+  print('');
+  print('Buffer @ 0x${buffer.address.toRadixString(16)}');
+  print('  length: ${buffer.ref.length}');
+  print('  data: 0x${buffer.ref.data.address.toRadixString(16)}');
+  print('  data bytes: ${List.generate(8, (i) => buffer.ref.data[i]).join(', ')}');
+  print('  sizeOf<Buffer>: ${sizeOf<Buffer>()} bytes');
+  print('');
+  print('Tagged pointer:');
+  print('  tagTarget @ 0x${tagTarget.address.toRadixString(16)}');
+  print('  taggedAddr = 0x${taggedAddr.toRadixString(16)} (address | 1)');
+  print('  Untagged: 0x${(taggedAddr & ~1).toRadixString(16)}');
+  print('');
+
   print('── Safety Tests ──');
   print('invalidPtr @ 0x${invalidPtr.address.toRadixString(16)}');
   print('  (reading this should produce a clean error, no crash)');
   print('');
 
-  // ──────────────────────────────────────────────────────────
-  // Pause at a programmatic breakpoint.
-  // This keeps the isolate paused at a VM safepoint where all
-  // local variables are visible to the debugger and VM Service.
-  //
-  // Connect the Native Memory Inspector to the VM Service URL
-  // printed above, then click "Rescan" to detect the pointers.
-  // ──────────────────────────────────────────────────────────
+  // ── Pause at breakpoint ──
   print('Pausing at debugger() breakpoint...');
   print('Connect the inspector now, then press Enter here to continue.\n');
 
   debugger(message: 'Inspect native pointers now');
 
-  // After the debugger resumes, wait for user to press Enter
   print('Debugger resumed. Press Enter to free memory and exit...');
   stdin.readLineSync();
 
   // Cleanup
+  calloc.free(buffer);
+  calloc.free(bufData);
+  calloc.free(rawBuf);
+  calloc.free(ptrToPtr);
+  calloc.free(innerInt);
+  calloc.free(withArray);
   calloc.free(intOrFloat);
   calloc.free(outer);
   calloc.free(packedData);
   calloc.free(node2);
   calloc.free(node1);
   calloc.free(point);
+  calloc.free(tagTarget);
   calloc.free(myStruct);
   print('Memory freed. Exiting.');
 }

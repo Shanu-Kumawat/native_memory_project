@@ -5,10 +5,10 @@ import 'package:google_fonts/google_fonts.dart';
 
 class InspectorTheme {
   // ─── Core palette ───
-  static const _bg = Color(0xFF0D1117);
-  static const _surface = Color(0xFF161B22);
-  static const _surfaceLight = Color(0xFF1C2333);
-  static const _border = Color(0xFF30363D);
+  static const _bg = Color(0xFF08090D);
+  static const _surface = Color(0xFF0F1117);
+  static const _surfaceLight = Color(0xFF171B26);
+  static const _border = Color(0xFF272C38);
   static const _accent = Color(0xFF58A6FF);
   static const _accentDim = Color(0xFF1F6FEB);
   static const _green = Color(0xFF3FB950);
@@ -51,35 +51,35 @@ class InspectorTheme {
     };
   }
 
-  // ─── Text styles ───
+  // ─── Text styles (increased sizes) ───
   static TextStyle get mono => GoogleFonts.jetBrainsMono(
-        fontSize: 13,
+        fontSize: 14,
         color: _text,
         height: 1.5,
       );
 
   static TextStyle get monoSmall => GoogleFonts.jetBrainsMono(
-        fontSize: 11,
+        fontSize: 12,
         color: _textDim,
         height: 1.5,
       );
 
   static TextStyle get heading => GoogleFonts.inter(
-        fontSize: 14,
+        fontSize: 15,
         fontWeight: FontWeight.w600,
         color: _text,
         letterSpacing: 0.3,
       );
 
   static TextStyle get label => GoogleFonts.inter(
-        fontSize: 12,
+        fontSize: 13,
         fontWeight: FontWeight.w500,
         color: _textDim,
         letterSpacing: 0.5,
       );
 
   static TextStyle get body => GoogleFonts.inter(
-        fontSize: 13,
+        fontSize: 14,
         color: _text,
         height: 1.5,
       );

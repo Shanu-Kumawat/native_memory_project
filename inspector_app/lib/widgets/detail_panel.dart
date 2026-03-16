@@ -1,6 +1,6 @@
 // Detail panel — shows selected pointer's fields, hex dump, layout, and graph.
-// Split view: fields on top, hex dump below. Layout diagram and object graph
-// are collapsible sections.
+// Split view: fields on top, hex dump below. Layout diagram always visible.
+// Byte interpretation panel pinned to bottom (only appears on selection).
 
 import 'package:flutter/material.dart';
 
@@ -35,7 +35,6 @@ class DetailPanel extends StatefulWidget {
 
 class _DetailPanelState extends State<DetailPanel> {
   final SelectionNotifier _selectionNotifier = SelectionNotifier();
-  bool _layoutExpanded = false;
 
   @override
   void dispose() {
@@ -43,13 +42,10 @@ class _DetailPanelState extends State<DetailPanel> {
     super.dispose();
   }
 
-  /// Navigate to a pointer by its address.
   void _navigateToAddress(int address) {
     final idx =
         widget.allPointers.indexWhere((p) => p.address == address);
-    if (idx >= 0) {
-      widget.onNavigate(idx);
-    }
+    if (idx >= 0) widget.onNavigate(idx);
   }
 
   @override
@@ -63,19 +59,27 @@ class _DetailPanelState extends State<DetailPanel> {
     return Column(
       children: [
         _header(d),
+        // ── Scrollable content ──
         Expanded(
           child: SingleChildScrollView(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // ─── Fields view ───
+                // Fields view
                 FieldTreeView(
                   fields: d.fields,
                   rawBytes: d.rawBytes,
                   selectionNotifier: _selectionNotifier,
                   onPointerTap: _navigateToAddress,
                 ),
-                // ─── Hex dump view ───
+                // Layout diagram — always visible
+                if (d.hasFields)
+                  LayoutDiagram(
+                    fields: d.fields,
+                    totalSize: d.structSize,
+                    selectionNotifier: _selectionNotifier,
+                  ),
+                // Hex dump view
                 if (d.hasRawBytes) ...[
                   const Divider(color: InspectorTheme.border, height: 1),
                   HexDumpView(
@@ -85,30 +89,8 @@ class _DetailPanelState extends State<DetailPanel> {
                     fields: d.fields,
                   ),
                 ],
-                // ─── Byte interpretation panel ───
-                if (d.hasRawBytes)
-                  ByteInterpretationPanel(
-                    selectionNotifier: _selectionNotifier,
-                    rawBytes: d.rawBytes,
-                  ),
-                // ─── Layout diagram (collapsible) ───
-                if (d.hasFields) ...[
-                  _collapsibleHeader(
-                    'Layout Diagram',
-                    Icons.straighten,
-                    _layoutExpanded,
-                    () => setState(() =>
-                        _layoutExpanded = !_layoutExpanded),
-                  ),
-                  if (_layoutExpanded)
-                    LayoutDiagram(
-                      fields: d.fields,
-                      totalSize: d.structSize,
-                      selectionNotifier: _selectionNotifier,
-                    ),
-                ],
-                // ─── Object graph (auto-shows for pointer-containing structs) ───
-                if (d.hasPointerFields)
+                // Object graph (for structs with nested structures)
+                if (d.hasInterestingStructure)
                   ObjectGraph(
                     rootPointer: d,
                     allPointers: widget.allPointers,
@@ -118,11 +100,16 @@ class _DetailPanelState extends State<DetailPanel> {
             ),
           ),
         ),
+        // ── Byte interpretation — pinned to bottom ──
+        if (d.hasRawBytes)
+          ByteInterpretationPanel(
+            selectionNotifier: _selectionNotifier,
+            rawBytes: d.rawBytes,
+          ),
       ],
     );
   }
 
-  // ─── Header ───
   Widget _header(PointerData d) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -151,7 +138,6 @@ class _DetailPanelState extends State<DetailPanel> {
             style: InspectorTheme.mono.copyWith(
               color: InspectorTheme.accent,
               fontWeight: FontWeight.w600,
-              fontSize: 14,
             ),
           ),
           const SizedBox(width: 8),
@@ -170,18 +156,13 @@ class _DetailPanelState extends State<DetailPanel> {
             ),
             child: Text(
               'Pointer<${d.nativeType}>',
-              style: InspectorTheme.monoSmall.copyWith(
-                color: InspectorTheme.purple,
-                fontSize: 11,
-              ),
+              style: InspectorTheme.monoSmall
+                  .copyWith(color: InspectorTheme.purple),
             ),
           ),
           const SizedBox(width: 10),
           // Address
-          Text(
-            d.addressHex,
-            style: InspectorTheme.monoSmall.copyWith(fontSize: 11),
-          ),
+          Text(d.addressHex, style: InspectorTheme.monoSmall),
           const Spacer(),
           // Size badge
           Container(
@@ -190,10 +171,8 @@ class _DetailPanelState extends State<DetailPanel> {
               color: InspectorTheme.surfaceLight,
               borderRadius: BorderRadius.circular(4),
             ),
-            child: Text(
-              '${d.structSize}B',
-              style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
-            ),
+            child: Text('${d.structSize}B',
+                style: InspectorTheme.monoSmall.copyWith(fontSize: 11)),
           ),
           const SizedBox(width: 8),
           // Field count
@@ -204,47 +183,14 @@ class _DetailPanelState extends State<DetailPanel> {
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
-              '${d.fields.where((f) => !f.isPadding).length} fields',
-              style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
-            ),
+                '${d.fields.where((f) => !f.isPadding).length} fields',
+                style: InspectorTheme.monoSmall.copyWith(fontSize: 11)),
           ),
         ],
       ),
     );
   }
 
-  Widget _collapsibleHeader(
-    String label,
-    IconData icon,
-    bool expanded,
-    VoidCallback onTap,
-  ) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: const BoxDecoration(
-          border: Border(top: BorderSide(color: InspectorTheme.border)),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              expanded ? Icons.expand_more : Icons.chevron_right,
-              size: 14,
-              color: InspectorTheme.textDim,
-            ),
-            const SizedBox(width: 4),
-            Icon(icon, size: 12, color: InspectorTheme.textDim),
-            const SizedBox(width: 6),
-            Text(label,
-                style: InspectorTheme.label.copyWith(fontSize: 10)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ─── Error view ───
   Widget _errorView(PointerData d) {
     return Column(
       children: [
@@ -259,13 +205,11 @@ class _DetailPanelState extends State<DetailPanel> {
                     color: InspectorTheme.error.withValues(alpha: 0.5)),
                 const SizedBox(height: 12),
                 Text(d.error ?? 'Unknown error',
-                    style: InspectorTheme.mono.copyWith(
-                        color: InspectorTheme.error, fontSize: 12)),
+                    style: InspectorTheme.mono
+                        .copyWith(color: InspectorTheme.error, fontSize: 13)),
                 const SizedBox(height: 6),
-                Text(
-                  'Address: ${d.addressHex}',
-                  style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
-                ),
+                Text('Address: ${d.addressHex}',
+                    style: InspectorTheme.monoSmall),
               ],
             ),
           ),

@@ -1,4 +1,6 @@
 // Byte interpretation panel — HxD-style multi-type decode of selected bytes.
+// Triggers ONLY on byte selection (click), not on hover.
+// Positioned at the bottom of the detail panel to avoid layout jumps.
 
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -6,8 +8,6 @@ import 'package:flutter/material.dart';
 import '../models/selection_notifier.dart';
 import '../theme.dart';
 
-/// Shows multiple interpretations of the currently selected byte range.
-/// Like HxD's "Data Inspector" panel — extremely useful for unknown buffers.
 class ByteInterpretationPanel extends StatelessWidget {
   const ByteInterpretationPanel({
     super.key,
@@ -23,7 +23,8 @@ class ByteInterpretationPanel extends StatelessWidget {
     return ListenableBuilder(
       listenable: selectionNotifier,
       builder: (context, _) {
-        final range = selectionNotifier.range;
+        // Only trigger on SELECTION (click), not hover
+        final range = selectionNotifier.selection;
         if (range == null || rawBytes == null || rawBytes!.isEmpty) {
           return _empty();
         }
@@ -41,54 +42,56 @@ class ByteInterpretationPanel extends StatelessWidget {
 
         return Container(
           decoration: const BoxDecoration(
+            color: InspectorTheme.surface,
             border: Border(top: BorderSide(color: InspectorTheme.border)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
                 child: Row(
                   children: [
-                    Icon(Icons.data_object, size: 12,
-                        color: InspectorTheme.textDim),
+                    Icon(Icons.data_object,
+                        size: 13, color: InspectorTheme.textDim),
                     const SizedBox(width: 6),
-                    Text(
-                      'Byte Interpretation',
-                      style: InspectorTheme.label.copyWith(fontSize: 10),
-                    ),
+                    Text('Byte Interpretation',
+                        style: InspectorTheme.label.copyWith(fontSize: 11)),
                     const Spacer(),
                     Text(
                       '${range.fieldName ?? 'selected'}: $size byte${size == 1 ? '' : 's'} @ +$offset',
-                      style: InspectorTheme.monoSmall.copyWith(fontSize: 9),
+                      style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
+                    ),
+                    const SizedBox(width: 8),
+                    InkWell(
+                      onTap: () => selectionNotifier.clearSelection(),
+                      borderRadius: BorderRadius.circular(3),
+                      child: Padding(
+                        padding: const EdgeInsets.all(2),
+                        child: Icon(Icons.close,
+                            size: 12, color: InspectorTheme.textDim),
+                      ),
                     ),
                   ],
                 ),
               ),
               for (final entry in interpretations)
                 Padding(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                   child: Row(
                     children: [
                       SizedBox(
-                        width: 60,
-                        child: Text(
-                          entry.type,
-                          style: InspectorTheme.monoSmall.copyWith(
-                            color: InspectorTheme.textDim,
-                            fontSize: 10,
-                          ),
-                        ),
+                        width: 65,
+                        child: Text(entry.type,
+                            style: InspectorTheme.monoSmall
+                                .copyWith(color: InspectorTheme.textDim)),
                       ),
                       Expanded(
-                        child: SelectableText(
-                          entry.value,
-                          style: InspectorTheme.monoSmall.copyWith(
-                            color: InspectorTheme.text,
-                            fontSize: 11,
-                          ),
-                        ),
+                        child: SelectableText(entry.value,
+                            style: InspectorTheme.monoSmall
+                                .copyWith(color: InspectorTheme.text)),
                       ),
                     ],
                   ),
@@ -104,24 +107,26 @@ class ByteInterpretationPanel extends StatelessWidget {
   Widget _empty() {
     return Container(
       decoration: const BoxDecoration(
+        color: InspectorTheme.surface,
         border: Border(top: BorderSide(color: InspectorTheme.border)),
       ),
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
-          Icon(Icons.data_object, size: 12,
+          Icon(Icons.data_object,
+              size: 13,
               color: InspectorTheme.textDim.withValues(alpha: 0.4)),
           const SizedBox(width: 6),
           Text(
-            'Hover a field or hex byte to see interpretations',
-            style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
+            'Click a field or select hex bytes to see interpretations',
+            style: InspectorTheme.monoSmall
+                .copyWith(fontSize: 10, color: InspectorTheme.textDim),
           ),
         ],
       ),
     );
   }
 
-  /// Generate all valid interpretations for the given bytes.
   List<_Interpretation> _interpret(Uint8List bytes) {
     final results = <_Interpretation>[];
     final bd = ByteData.sublistView(bytes);
@@ -130,62 +135,40 @@ class ByteInterpretationPanel extends StatelessWidget {
     // Hex
     results.add(_Interpretation(
       'hex',
-      bytes.map((b) => b.toRadixString(16).toUpperCase().padLeft(2, '0'))
+      bytes
+          .map((b) => b.toRadixString(16).toUpperCase().padLeft(2, '0'))
           .join(' '),
     ));
 
-    // Int8 / Uint8
     if (len >= 1) {
       results.add(_Interpretation('int8', bd.getInt8(0).toString()));
       results.add(_Interpretation('uint8', bd.getUint8(0).toString()));
     }
-
-    // Int16 / Uint16
     if (len >= 2) {
       results.add(_Interpretation(
-        'int16',
-        bd.getInt16(0, Endian.little).toString(),
-      ));
+          'int16', bd.getInt16(0, Endian.little).toString()));
       results.add(_Interpretation(
-        'uint16',
-        bd.getUint16(0, Endian.little).toString(),
-      ));
+          'uint16', bd.getUint16(0, Endian.little).toString()));
     }
-
-    // Int32 / Uint32
     if (len >= 4) {
       results.add(_Interpretation(
-        'int32',
-        bd.getInt32(0, Endian.little).toString(),
-      ));
+          'int32', bd.getInt32(0, Endian.little).toString()));
       results.add(_Interpretation(
         'uint32',
         '${bd.getUint32(0, Endian.little)} (0x${bd.getUint32(0, Endian.little).toRadixString(16)})',
       ));
-    }
-
-    // Float32
-    if (len >= 4) {
       final f = bd.getFloat32(0, Endian.little);
       if (f.isFinite) {
         results.add(_Interpretation('float', f.toString()));
       }
     }
-
-    // Int64 / Uint64
     if (len >= 8) {
       results.add(_Interpretation(
-        'int64',
-        bd.getInt64(0, Endian.little).toString(),
-      ));
+          'int64', bd.getInt64(0, Endian.little).toString()));
       results.add(_Interpretation(
         'uint64',
         '0x${bd.getUint64(0, Endian.little).toRadixString(16)}',
       ));
-    }
-
-    // Float64
-    if (len >= 8) {
       final d = bd.getFloat64(0, Endian.little);
       if (d.isFinite) {
         results.add(_Interpretation('double', d.toString()));

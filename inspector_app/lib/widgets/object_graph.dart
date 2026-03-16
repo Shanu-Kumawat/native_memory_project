@@ -1,4 +1,5 @@
-// Object graph — visual pointer chain for structs with pointer fields.
+// Object graph — visual structure map for structs with interesting sub-structures.
+// Shows nested structs, pointer chains, arrays, and union variants.
 // Supports branching, cycle detection, lazy expansion, clickable nodes.
 
 import 'package:flutter/material.dart';
@@ -14,13 +15,8 @@ class ObjectGraph extends StatefulWidget {
     required this.onNavigate,
   });
 
-  /// The pointer whose graph to display.
   final PointerData rootPointer;
-
-  /// All scanned pointers — used to resolve pointer field targets.
   final List<PointerData> allPointers;
-
-  /// Called when user clicks a graph node.
   final ValueChanged<int> onNavigate;
 
   @override
@@ -32,8 +28,9 @@ class _ObjectGraphState extends State<ObjectGraph> {
 
   @override
   Widget build(BuildContext context) {
-    // Only show for structs that have pointer fields
-    if (!widget.rootPointer.hasPointerFields) {
+    // Show for any struct with interesting sub-structure:
+    // pointer fields, nested structs, arrays, or unions
+    if (!widget.rootPointer.hasInterestingStructure) {
       return const SizedBox.shrink();
     }
 
@@ -47,7 +44,8 @@ class _ObjectGraphState extends State<ObjectGraph> {
           InkWell(
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
                 children: [
                   Icon(
@@ -57,10 +55,10 @@ class _ObjectGraphState extends State<ObjectGraph> {
                   ),
                   const SizedBox(width: 4),
                   Icon(Icons.account_tree_outlined,
-                      size: 12, color: InspectorTheme.textDim),
+                      size: 13, color: InspectorTheme.textDim),
                   const SizedBox(width: 6),
-                  Text('Object Graph',
-                      style: InspectorTheme.label.copyWith(fontSize: 10)),
+                  Text('Structure Map',
+                      style: InspectorTheme.label.copyWith(fontSize: 11)),
                 ],
               ),
             ),
@@ -76,7 +74,7 @@ class _ObjectGraphState extends State<ObjectGraph> {
   }
 
   Widget _buildGraph() {
-    final visited = <int>{}; // Cycle detection by address
+    final visited = <int>{};
     return _buildNode(widget.rootPointer, visited, 0);
   }
 
@@ -87,20 +85,20 @@ class _ObjectGraphState extends State<ObjectGraph> {
 
     if (visited.contains(pointer.address)) {
       return _label(
-        '↻ cycle → ${pointer.variableName}',
-        InspectorTheme.warning,
-      );
+          '↻ cycle → ${pointer.variableName}', InspectorTheme.warning);
     }
     visited.add(pointer.address);
 
-    // Collect pointer fields and their targets
-    final pointerFields = pointer.fields.where((f) => f.isPointer).toList();
+    // Collect interesting fields
+    final interestingFields = pointer.fields
+        .where((f) => f.isPointer || f.isStruct || f.isArray)
+        .toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _nodeWidget(pointer),
-        for (final field in pointerFields)
+        for (final field in interestingFields)
           Padding(
             padding: const EdgeInsets.only(left: 20),
             child: _buildEdge(field, pointer, visited, depth),
@@ -115,7 +113,59 @@ class _ObjectGraphState extends State<ObjectGraph> {
     Set<int> visited,
     int depth,
   ) {
-    // Try to decode the pointer value from raw bytes
+    // Array fields — show inline summary
+    if (field.isArray) {
+      return Row(
+        children: [
+          _connector(),
+          Text('.${field.name}', style: _fieldStyle),
+          _arrow(),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: InspectorTheme.arrayType.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(3),
+              border: Border.all(
+                  color: InspectorTheme.arrayType.withValues(alpha: 0.25)),
+            ),
+            child: Text(
+              '${field.typeName} (${field.size}B)',
+              style: InspectorTheme.monoSmall
+                  .copyWith(color: InspectorTheme.arrayType, fontSize: 10),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Nested struct fields — show type info
+    if (field.isStruct) {
+      return Row(
+        children: [
+          _connector(),
+          Text('.${field.name}', style: _fieldStyle),
+          _arrow(),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: InspectorTheme.structType.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(3),
+              border: Border.all(
+                  color: InspectorTheme.structType.withValues(alpha: 0.25)),
+            ),
+            child: Text(
+              '${field.typeName} (${field.size}B)',
+              style: InspectorTheme.monoSmall
+                  .copyWith(color: InspectorTheme.structType, fontSize: 10),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Pointer fields — try to resolve target
     int? targetAddress;
     if (parent.hasRawBytes &&
         field.offset + field.size <= parent.rawBytes!.length) {
@@ -140,10 +190,8 @@ class _ObjectGraphState extends State<ObjectGraph> {
       );
     }
 
-    // Find the target pointer in our scanned list
-    final targetIdx = widget.allPointers.indexWhere(
-      (p) => p.address == targetAddress,
-    );
+    final targetIdx =
+        widget.allPointers.indexWhere((p) => p.address == targetAddress);
 
     if (targetIdx < 0) {
       return Row(
@@ -199,9 +247,7 @@ class _ObjectGraphState extends State<ObjectGraph> {
             Text(
               p.variableName,
               style: InspectorTheme.monoSmall.copyWith(
-                color: InspectorTheme.accent,
-                fontSize: 11,
-              ),
+                  color: InspectorTheme.accent, fontSize: 12),
             ),
             const SizedBox(width: 6),
             Container(
@@ -211,17 +257,14 @@ class _ObjectGraphState extends State<ObjectGraph> {
                 color: InspectorTheme.background,
                 borderRadius: BorderRadius.circular(3),
               ),
-              child: Text(
-                p.nativeType,
-                style: InspectorTheme.monoSmall.copyWith(fontSize: 9),
-              ),
+              child: Text(p.nativeType,
+                  style: InspectorTheme.monoSmall.copyWith(fontSize: 10)),
             ),
             if (p.hasFields) ...[
               const SizedBox(width: 6),
-              // Show summary of non-pointer fields
               Text(
                 _fieldSummary(p),
-                style: InspectorTheme.monoSmall.copyWith(fontSize: 9),
+                style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
               ),
             ],
           ],
@@ -231,11 +274,10 @@ class _ObjectGraphState extends State<ObjectGraph> {
   }
 
   String _fieldSummary(PointerData p) {
-    final nonPtrFields = p.fields
-        .where((f) => !f.isPointer && !f.isPadding)
-        .take(2);
+    final nonPtrFields =
+        p.fields.where((f) => !f.isPointer && !f.isPadding).take(2);
     if (nonPtrFields.isEmpty) return '';
-    return '[${nonPtrFields.map((f) => '${f.name}').join(', ')}]';
+    return '[${nonPtrFields.map((f) => f.name).join(', ')}]';
   }
 
   Widget _connector() => Padding(
@@ -252,16 +294,16 @@ class _ObjectGraphState extends State<ObjectGraph> {
         text,
         style: InspectorTheme.monoSmall.copyWith(
           color: color,
-          fontSize: 10,
+          fontSize: 11,
           fontStyle: FontStyle.italic,
         ),
       );
 
   static final _fieldStyle = InspectorTheme.monoSmall
-      .copyWith(color: InspectorTheme.accent, fontSize: 10);
+      .copyWith(color: InspectorTheme.accent, fontSize: 11);
 
   static final _connStyle = InspectorTheme.monoSmall.copyWith(
     color: InspectorTheme.border,
-    fontSize: 10,
+    fontSize: 11,
   );
 }

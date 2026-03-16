@@ -1,35 +1,50 @@
-// Shared hover state for bidirectional field ↔ hex highlighting.
+// Shared state for bidirectional field ↔ hex highlighting and byte selection.
+//
+// Two separate concepts:
+// - HOVER: transient highlighting for field↔hex sync (mouse enter/exit)
+// - SELECTION: persistent byte range selection for byte interpretation (click)
 
 import 'package:flutter/material.dart';
 
-/// Notifies listeners when a byte range should be highlighted.
-/// Used to synchronize field tree rows and hex dump bytes.
 class SelectionNotifier extends ChangeNotifier {
-  /// Currently highlighted byte range, or null if nothing is highlighted.
-  HighlightRange? _range;
-  HighlightRange? get range => _range;
+  // ─── Hover state (for bidirectional field↔hex highlighting) ───
+  HighlightRange? _hoverRange;
+  HighlightRange? get hoverRange => _hoverRange;
 
-  /// Set the highlighted range. Called by field rows on hover.
-  void highlight(int offset, int size, Color color, {String? fieldName}) {
-    _range = HighlightRange(
-      offset: offset,
-      size: size,
-      color: color,
-      fieldName: fieldName,
+  void hover(int offset, int size, Color color, {String? fieldName}) {
+    _hoverRange = HighlightRange(
+      offset: offset, size: size, color: color, fieldName: fieldName,
     );
     notifyListeners();
   }
 
-  /// Clear the highlight. Called on hover exit.
-  void clear() {
-    if (_range != null) {
-      _range = null;
+  void clearHover() {
+    if (_hoverRange != null) {
+      _hoverRange = null;
+      notifyListeners();
+    }
+  }
+
+  // ─── Selection state (for byte interpretation panel) ───
+  HighlightRange? _selection;
+  HighlightRange? get selection => _selection;
+
+  void select(int offset, int size, Color color, {String? fieldName}) {
+    _selection = HighlightRange(
+      offset: offset, size: size, color: color, fieldName: fieldName,
+    );
+    notifyListeners();
+  }
+
+  void clearSelection() {
+    if (_selection != null) {
+      _selection = null;
       notifyListeners();
     }
   }
 }
 
-/// A byte range to highlight, with color and optional field name.
+/// A byte range with color and optional field name.
 class HighlightRange {
   final int offset;
   final int size;
@@ -43,7 +58,6 @@ class HighlightRange {
     this.fieldName,
   });
 
-  /// Check if a byte index falls within this range.
   bool contains(int byteIndex) =>
       byteIndex >= offset && byteIndex < offset + size;
 }

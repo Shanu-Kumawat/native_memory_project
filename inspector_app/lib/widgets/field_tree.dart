@@ -26,7 +26,7 @@ class FieldTreeView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (fields.isEmpty) {
-      // If we have raw bytes but no struct fields, show as raw memory
+      // Unknown pointer — show pattern hints
       if (rawBytes != null && rawBytes!.isNotEmpty) {
         return Padding(
           padding: const EdgeInsets.all(12),
@@ -35,18 +35,17 @@ class FieldTreeView extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(Icons.info_outline, size: 12,
-                      color: InspectorTheme.textDim),
+                  Icon(Icons.info_outline,
+                      size: 13, color: InspectorTheme.textDim),
                   const SizedBox(width: 6),
                   Text(
                     'Untyped pointer — ${rawBytes!.length} raw bytes',
                     style: InspectorTheme.monoSmall
-                        .copyWith(color: InspectorTheme.textDim, fontSize: 10),
+                        .copyWith(color: InspectorTheme.textDim),
                   ),
                 ],
               ),
               const SizedBox(height: 6),
-              // Pattern hints
               ..._patternHints(),
             ],
           ),
@@ -55,14 +54,14 @@ class FieldTreeView extends StatelessWidget {
       return Padding(
         padding: const EdgeInsets.all(12),
         child: Text('No field data available',
-            style: InspectorTheme.monoSmall.copyWith(fontSize: 10)),
+            style: InspectorTheme.monoSmall),
       );
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Header
+        // Column header
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           child: Row(
@@ -72,9 +71,9 @@ class FieldTreeView extends StatelessWidget {
               Expanded(flex: 2, child: Text('TYPE', style: _headerStyle)),
               SizedBox(width: 50, child: Text('OFF', style: _headerStyle)),
               SizedBox(
-                width: 40,
-                child: Text('SIZE', style: _headerStyle, textAlign: TextAlign.right),
-              ),
+                  width: 40,
+                  child:
+                      Text('SIZE', style: _headerStyle, textAlign: TextAlign.right)),
             ],
           ),
         ),
@@ -85,14 +84,12 @@ class FieldTreeView extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
             child: Row(
               children: [
-                Icon(Icons.memory, size: 10, color: InspectorTheme.success),
+                Icon(Icons.memory, size: 11, color: InspectorTheme.success),
                 const SizedBox(width: 4),
                 Text(
                   '${rawBytes!.length} bytes from native memory',
-                  style: InspectorTheme.monoSmall.copyWith(
-                    color: InspectorTheme.success,
-                    fontSize: 9,
-                  ),
+                  style: InspectorTheme.monoSmall
+                      .copyWith(color: InspectorTheme.success, fontSize: 10),
                 ),
               ],
             ),
@@ -127,28 +124,13 @@ class FieldTreeView extends StatelessWidget {
       hints.add(_hint('Printable ASCII: "$ascii"'));
     }
 
-    // Check for pointer-like values (8 bytes starting with 0x7f or 0x55)
+    // Check for pointer-like values
     if (rawBytes!.length >= 8) {
       final bd = ByteData.sublistView(Uint8List.fromList(rawBytes!));
       final val = bd.getUint64(0, Endian.little);
       if (val > 0x100000 && val < 0x7fffffffffff) {
         hints.add(
             _hint('Pointer-like value at +0x00: 0x${val.toRadixString(16)}'));
-      }
-    }
-
-    // Check for zero-filled regions
-    int zeroStart = -1;
-    for (int i = 0; i < rawBytes!.length; i++) {
-      if (rawBytes![i] == 0) {
-        if (zeroStart < 0) zeroStart = i;
-      } else {
-        if (zeroStart >= 0 && i - zeroStart >= 4) {
-          hints.add(_hint(
-            'Zero-filled: +0x${zeroStart.toRadixString(16)} to +0x${(i - 1).toRadixString(16)}',
-          ));
-        }
-        zeroStart = -1;
       }
     }
 
@@ -159,19 +141,20 @@ class FieldTreeView extends StatelessWidget {
         padding: const EdgeInsets.only(top: 2),
         child: Row(
           children: [
-            const SizedBox(width: 18),
-            Icon(Icons.lightbulb_outline, size: 10,
+            const SizedBox(width: 19),
+            Icon(Icons.lightbulb_outline,
+                size: 11,
                 color: InspectorTheme.warning.withValues(alpha: 0.6)),
             const SizedBox(width: 4),
             Flexible(
               child: Text(text,
-                  style: InspectorTheme.monoSmall.copyWith(fontSize: 9)),
+                  style: InspectorTheme.monoSmall.copyWith(fontSize: 10)),
             ),
           ],
         ),
       );
 
-  static final _headerStyle = InspectorTheme.label.copyWith(fontSize: 9);
+  static final _headerStyle = InspectorTheme.label.copyWith(fontSize: 10);
 }
 
 // ─── Field Row ───────────────────────────────────────────────────────
@@ -206,80 +189,69 @@ class _FieldRowState extends State<_FieldRow> {
     return ListenableBuilder(
       listenable: widget.selectionNotifier,
       builder: (context, _) {
-        final highlighted = widget.selectionNotifier.range;
-        final isHighlighted = highlighted != null &&
-            highlighted.offset == f.offset &&
-            highlighted.size == f.size;
+        final hovered = widget.selectionNotifier.hoverRange;
+        final isHovered = hovered != null &&
+            hovered.offset == f.offset &&
+            hovered.size == f.size;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             MouseRegion(
-              onEnter: (_) => widget.selectionNotifier.highlight(
-                f.offset,
-                f.size,
-                color,
+              onEnter: (_) => widget.selectionNotifier.hover(
+                f.offset, f.size, color,
                 fieldName: f.name,
               ),
-              onExit: (_) => widget.selectionNotifier.clear(),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 100),
-                padding: EdgeInsets.only(
-                  left: 12.0 + widget.depth * 16,
-                  right: 12,
-                  top: 4,
-                  bottom: 4,
-                ),
-                decoration: BoxDecoration(
-                  color: isHighlighted
-                      ? color.withValues(alpha: 0.08)
-                      : widget.index.isEven
-                          ? Colors.transparent
-                          : InspectorTheme.surfaceLight.withValues(alpha: 0.15),
-                  border: isHighlighted
-                      ? Border(
-                          left: BorderSide(color: color, width: 2))
-                      : null,
-                ),
-                child: Row(
-                  children: [
-                    // Expand/tree icon + name
-                    Expanded(
-                      flex: 3,
-                      child: _nameCell(f, color),
-                    ),
-                    // Value
-                    Expanded(
-                      flex: 4,
-                      child: _valueCell(f),
-                    ),
-                    // Type badge
-                    Expanded(
-                      flex: 2,
-                      child: _typeBadge(f, color),
-                    ),
-                    // Offset
-                    SizedBox(
-                      width: 50,
-                      child: Text(
-                        '+${f.offset}',
-                        style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
+              onExit: (_) => widget.selectionNotifier.clearHover(),
+              child: GestureDetector(
+                onTap: () {
+                  // Click a field to select its byte range
+                  widget.selectionNotifier.select(
+                    f.offset, f.size, color,
+                    fieldName: f.name,
+                  );
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 100),
+                  padding: EdgeInsets.only(
+                    left: 12.0 + widget.depth * 16,
+                    right: 12,
+                    top: 4,
+                    bottom: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isHovered
+                        ? color.withValues(alpha: 0.08)
+                        : widget.index.isEven
+                            ? Colors.transparent
+                            : InspectorTheme.surfaceLight
+                                .withValues(alpha: 0.15),
+                    border: isHovered
+                        ? Border(left: BorderSide(color: color, width: 2))
+                        : null,
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(flex: 3, child: _nameCell(f, color)),
+                      Expanded(flex: 4, child: _valueCell(f)),
+                      Expanded(flex: 2, child: _typeBadge(f, color)),
+                      SizedBox(
+                        width: 50,
+                        child: Text('+${f.offset}',
+                            style: InspectorTheme.monoSmall),
                       ),
-                    ),
-                    // Size
-                    SizedBox(
-                      width: 40,
-                      child: Text(
-                        '${f.size}B',
-                        style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
-                        textAlign: TextAlign.right,
+                      SizedBox(
+                        width: 40,
+                        child: Text('${f.size}B',
+                            style: InspectorTheme.monoSmall,
+                            textAlign: TextAlign.right),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-            // Expanded children
+            // Expanded children (array elements, nested struct fields)
             if (f.isExpanded && f.hasChildren)
               for (int i = 0; i < f.children!.length; i++)
                 _FieldRow(
@@ -299,7 +271,6 @@ class _FieldRowState extends State<_FieldRow> {
   Widget _nameCell(StructField f, Color color) {
     return Row(
       children: [
-        // Expand toggle for expandable fields
         if (f.hasChildren)
           GestureDetector(
             onTap: () => setState(() => f.isExpanded = !f.isExpanded),
@@ -313,20 +284,18 @@ class _FieldRowState extends State<_FieldRow> {
           Icon(
             f.isPadding ? Icons.more_horiz : Icons.remove,
             size: 12,
-            color: f.isPadding
-                ? InspectorTheme.padding
-                : InspectorTheme.border,
+            color: f.isPadding ? InspectorTheme.padding : InspectorTheme.border,
           ),
         const SizedBox(width: 4),
-        Text(
-          f.name,
-          style: InspectorTheme.monoSmall.copyWith(
-            color: f.isPadding
-                ? InspectorTheme.padding
-                : InspectorTheme.accent,
-            fontWeight: FontWeight.w500,
-            fontStyle: f.isPadding ? FontStyle.italic : null,
-            fontSize: 11,
+        Flexible(
+          child: Text(
+            f.name,
+            style: InspectorTheme.monoSmall.copyWith(
+              color: f.isPadding ? InspectorTheme.padding : InspectorTheme.accent,
+              fontWeight: FontWeight.w500,
+              fontStyle: f.isPadding ? FontStyle.italic : null,
+            ),
+            overflow: TextOverflow.ellipsis,
           ),
         ),
       ],
@@ -336,8 +305,7 @@ class _FieldRowState extends State<_FieldRow> {
   Widget _valueCell(StructField f) {
     if (f.isPadding) {
       return Text('···',
-          style: InspectorTheme.monoSmall.copyWith(
-              color: InspectorTheme.padding, fontSize: 10));
+          style: InspectorTheme.monoSmall.copyWith(color: InspectorTheme.padding));
     }
 
     final decoded = _decodeFieldValue(f, widget.rawBytes);
@@ -348,9 +316,11 @@ class _FieldRowState extends State<_FieldRow> {
         if (intVal != null) {
           return Row(
             children: [
-              Text(decoded,
-                  style: InspectorTheme.monoSmall.copyWith(
-                      color: InspectorTheme.text, fontSize: 11)),
+              Flexible(
+                child: Text(decoded,
+                    style: InspectorTheme.monoSmall
+                        .copyWith(color: InspectorTheme.text)),
+              ),
               const SizedBox(width: 4),
               Text(
                 '(0x${intVal.toRadixString(16).toUpperCase()})',
@@ -370,17 +340,20 @@ class _FieldRowState extends State<_FieldRow> {
             onTap: () => widget.onPointerTap!(addr),
             child: Row(
               children: [
-                Text(
-                  decoded,
-                  style: InspectorTheme.monoSmall.copyWith(
-                    color: InspectorTheme.success,
-                    fontSize: 11,
-                    decoration: TextDecoration.underline,
-                    decorationColor: InspectorTheme.success.withValues(alpha: 0.4),
+                Flexible(
+                  child: Text(
+                    decoded,
+                    style: InspectorTheme.monoSmall.copyWith(
+                      color: InspectorTheme.success,
+                      decoration: TextDecoration.underline,
+                      decorationColor:
+                          InspectorTheme.success.withValues(alpha: 0.4),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 4),
-                Icon(Icons.open_in_new, size: 9,
+                Icon(Icons.open_in_new,
+                    size: 10,
                     color: InspectorTheme.success.withValues(alpha: 0.5)),
               ],
             ),
@@ -389,13 +362,11 @@ class _FieldRowState extends State<_FieldRow> {
       }
 
       return Text(decoded,
-          style: InspectorTheme.monoSmall
-              .copyWith(color: InspectorTheme.text, fontSize: 11));
+          style: InspectorTheme.monoSmall.copyWith(color: InspectorTheme.text));
     }
 
     return Text('—',
-        style: InspectorTheme.monoSmall
-            .copyWith(color: InspectorTheme.textDim, fontSize: 10));
+        style: InspectorTheme.monoSmall.copyWith(color: InspectorTheme.textDim));
   }
 
   Widget _typeBadge(StructField f, Color color) {
@@ -412,7 +383,7 @@ class _FieldRowState extends State<_FieldRow> {
           f.typeName,
           style: InspectorTheme.monoSmall.copyWith(
             color: color,
-            fontSize: 9,
+            fontSize: 10,
             fontWeight: FontWeight.w500,
           ),
           overflow: TextOverflow.ellipsis,
@@ -432,8 +403,7 @@ class _FieldRowState extends State<_FieldRow> {
     if (bytes == null || field.offset + field.size > bytes.length) return null;
     try {
       final data = Uint8List.fromList(
-        bytes.sublist(field.offset, field.offset + field.size),
-      );
+          bytes.sublist(field.offset, field.offset + field.size));
       final bd = ByteData.sublistView(data);
       return switch (field.typeName) {
         'Int8' => bd.getInt8(0),
@@ -455,8 +425,7 @@ class _FieldRowState extends State<_FieldRow> {
     if (bytes == null || field.offset + 8 > bytes.length) return null;
     try {
       final data = Uint8List.fromList(
-        bytes.sublist(field.offset, field.offset + 8),
-      );
+          bytes.sublist(field.offset, field.offset + 8));
       return ByteData.sublistView(data).getUint64(0, Endian.little);
     } catch (_) {
       return null;
@@ -469,8 +438,7 @@ class _FieldRowState extends State<_FieldRow> {
 
     try {
       final data = Uint8List.fromList(
-        bytes.sublist(field.offset, field.offset + field.size),
-      );
+          bytes.sublist(field.offset, field.offset + field.size));
       final bd = ByteData.sublistView(data);
 
       return switch (field.typeName) {

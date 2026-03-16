@@ -524,14 +524,20 @@ class VmServiceConnection {
 
       // ── Extract struct layout ──
       final layout = await _extractStructFields(nativeType);
-      final fields = layout.fields;
+      final rawFields = layout.fields;
       final structSize = layout.totalSize > 0
           ? layout.totalSize
-          : (fields.isNotEmpty
-              ? fields.last.offset + fields.last.size
+          : (rawFields.isNotEmpty
+              ? rawFields.last.offset + rawFields.last.size
               : 0);
-      _log('    struct layout: ${fields.length} fields, '
+      _log('    struct layout: ${rawFields.length} fields, '
           'total size: $structSize bytes (sizeOf=${ layout.totalSize })');
+
+      // ── Insert synthetic padding fields ──
+      final fields = _insertPadding(rawFields, structSize);
+
+      // ── Populate children for arrays ──
+      _populateArrayChildren(fields);
 
       return PointerData(
         variableName: varName,
@@ -1198,5 +1204,83 @@ class VmServiceConnection {
     // For non-ambiguous types, just update the size
     final mapped = _mapToFfiType(dartType);
     return (typeName: mapped.typeName, size: size);
+  }
+
+  /// Insert synthetic padding fields between struct fields where gaps exist.
+  List<StructField> _insertPadding(List<StructField> fields, int totalSize) {
+    if (fields.isEmpty || totalSize <= 0) return fields;
+
+    // Skip for unions (all fields at offset 0)
+    final isUnion = fields.length >= 2 &&
+        fields.every((f) => f.offset == 0);
+    if (isUnion) return fields;
+
+    final result = <StructField>[];
+    int cursor = 0;
+
+    for (final f in fields) {
+      if (f.offset > cursor) {
+        // Gap before this field — insert padding
+        result.add(StructField(
+          name: '[pad]',
+          typeName: '[pad]',
+          offset: cursor,
+          size: f.offset - cursor,
+          isPadding: true,
+        ));
+      }
+      result.add(f);
+      cursor = f.offset + f.size;
+    }
+
+    // Trailing padding
+    if (cursor < totalSize) {
+      result.add(StructField(
+        name: '[pad]',
+        typeName: '[pad]',
+        offset: cursor,
+        size: totalSize - cursor,
+        isPadding: true,
+      ));
+    }
+
+    return result;
+  }
+
+  /// For Array fields, populate children with element sub-fields.
+  void _populateArrayChildren(List<StructField> fields) {
+    for (final f in fields) {
+      if (f.isArray && f.size > 0) {
+        // Parse element type and compute stride. e.g. "Array<Int32>" → Int32, stride 4
+        final match = RegExp(r'Array<(\w+)>').firstMatch(f.typeName);
+        if (match != null) {
+          final elemType = match.group(1)!;
+          final stride = _mapToFfiType(elemType).size;
+          if (stride > 0) {
+            final count = f.size ~/ stride;
+            f.children?.clear();
+            final children = <StructField>[];
+            for (int i = 0; i < count; i++) {
+              children.add(StructField(
+                name: '[$i]',
+                typeName: elemType,
+                offset: f.offset + i * stride,
+                size: stride,
+              ));
+            }
+            // Use reflection-free approach: store children via the field constructor
+            // Since StructField.children is final, we need a different approach
+            // We'll set it directly since the field list is mutable
+            fields[fields.indexOf(f)] = StructField(
+              name: f.name,
+              typeName: f.typeName,
+              offset: f.offset,
+              size: f.size,
+              children: children,
+            );
+          }
+        }
+      }
+    }
   }
 }

@@ -69,6 +69,11 @@ class PointerData {
   bool get hasFields => fields.where((f) => !f.isPadding).isNotEmpty;
   bool get hasPointerFields =>
       fields.any((f) => f.typeName.startsWith('Pointer'));
+
+  /// True if struct has nested structs, arrays, or pointer fields worth graphing.
+  bool get hasInterestingStructure =>
+      fields.any((f) => f.isPointer || f.isStruct || f.isArray);
+
   String get addressHex => '0x${address.toRadixString(16).padLeft(12, '0')}';
 
   PointerCategory get category {
@@ -76,9 +81,14 @@ class PointerData {
       return PointerCategory.error;
     }
     if (nativeType == 'Unknown') return PointerCategory.raw;
-    if (nativeType.contains('Union') || _unionTypes.contains(nativeType)) {
+
+    // Detect union: multiple non-padding fields all at offset 0
+    final realFields = fields.where((f) => !f.isPadding).toList();
+    if (realFields.length >= 2 &&
+        realFields.every((f) => f.offset == 0)) {
       return PointerCategory.union;
     }
+
     if (fields.any((f) => f.isArray) ||
         nativeType.contains('Buffer') ||
         nativeType.contains('Array')) {
@@ -86,10 +96,6 @@ class PointerData {
     }
     return PointerCategory.struct;
   }
-
-  // Track known union types by checking if multiple fields share offset 0
-  static final Set<String> _unionTypes = {};
-  static void markAsUnion(String typeName) => _unionTypes.add(typeName);
 
   PointerData copyWith({
     String? variableName,
@@ -152,8 +158,8 @@ class InspectorState {
   int get readableCount =>
       pointers.where((p) => p.hasRawBytes && !p.hasError).length;
   int get errorCount => pointers.where((p) => p.hasError).length;
-  int get totalBytesRead => pointers.fold<int>(
-      0, (sum, p) => sum + (p.rawBytes?.length ?? 0));
+  int get totalBytesRead =>
+      pointers.fold<int>(0, (sum, p) => sum + (p.rawBytes?.length ?? 0));
 
   InspectorState copyWith({
     ConnectionState? connectionState,

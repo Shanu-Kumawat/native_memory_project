@@ -177,6 +177,21 @@ class VmServiceConnection {
     return 'Unknown';
   }
 
+  /// Extract `T` from a declared type string like `Pointer<T>` or
+  /// `Pointer<T>?`.
+  String? _extractNativeTypeFromDeclaredType(String? declaredTypeName) {
+    if (declaredTypeName == null || declaredTypeName.isEmpty) {
+      return null;
+    }
+    final raw = declaredTypeName.trim();
+    final match = RegExp(r'^Pointer<\s*(.+?)\s*>\??$').firstMatch(raw);
+    final inner = match?.group(1)?.trim();
+    if (inner == null || inner.isEmpty || inner == 'Never') {
+      return null;
+    }
+    return inner;
+  }
+
   // ─── Pointer Discovery ──────────────────────────────────────────────
 
   /// Scan the current isolate for Pointer variables.
@@ -278,6 +293,7 @@ class VmServiceConnection {
                 value,
                 scriptId: frame.location?.script?.id,
                 tokenPos: variable.declarationTokenPos,
+                declaredTypeName: variable.declaredType?.name,
               );
               if (pointerData != null) {
                 pointers.add(pointerData);
@@ -310,6 +326,7 @@ class VmServiceConnection {
                 final pointerData = await _tryExtractPointer(
                   fieldRef.name ?? 'unknown',
                   value,
+                  declaredTypeName: fieldRef.declaredType?.name,
                 );
                 if (pointerData != null) {
                   pointers.add(pointerData);
@@ -370,6 +387,7 @@ class VmServiceConnection {
     InstanceRef ref, {
     String? scriptId,
     int? tokenPos,
+    String? declaredTypeName,
   }) async {
     final className = ref.classRef?.name ?? '';
 
@@ -443,6 +461,19 @@ class VmServiceConnection {
 
       // ── Extract type ──
 
+      // Strategy -1: Declared variable type from protocol metadata
+      // (preferred, robust against Pointer<T> runtime type erasure).
+      final declaredNativeType =
+          _extractNativeTypeFromDeclaredType(declaredTypeName);
+      if (declaredNativeType != null) {
+        nativeType = declaredNativeType;
+        typeSource = 'declaredType';
+        _log('    ✓ Type resolved via declaredType: $nativeType '
+            '(from $declaredTypeName)');
+      } else if (declaredTypeName != null && declaredTypeName.isNotEmpty) {
+        _log('    declaredType present but not usable: $declaredTypeName');
+      }
+
       // Detect enriched protocol via kind field
       final instanceKindFromJson = instanceJson?['kind'];
       if (instanceKindFromJson == 'Pointer') {
@@ -453,11 +484,12 @@ class VmServiceConnection {
       // Strategy 0: Enriched protocol (nativeType in Instance JSON)
       // NOTE: Due to FFI type erasure, the Dart compiler's FFI transformer
       // replaces Pointer<MyStruct> → Pointer<Never> at compile time.
-      // So the VM's type_argument() returns "Never" even with our SDK
-      // changes. This is a COMPILER-level issue, not a VM-level one.
-      // The heuristic fallback (Strategy 3) is still needed until the
-      // FFI transformer is modified to preserve type arguments.
-      if (instanceJson != null && instanceJson.containsKey('nativeType')) {
+      // So runtime pointer instance metadata may still report "Never".
+      // We now prefer `BoundVariable.declaredType` when available and only
+      // use this/other strategies as compatibility fallbacks.
+      if (nativeType == 'Unknown' &&
+          instanceJson != null &&
+          instanceJson.containsKey('nativeType')) {
         final ntData = instanceJson['nativeType'];
         String? extractedName;
 

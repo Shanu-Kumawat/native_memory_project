@@ -1,0 +1,163 @@
+diff --git a/pkg/vm_service/lib/src/vm_service.dart b/pkg/vm_service/lib/src/vm_service.dart
+index 10677dc3154..1e1894a5083 100644
+--- a/pkg/vm_service/lib/src/vm_service.dart
++++ b/pkg/vm_service/lib/src/vm_service.dart
+@@ -27,7 +27,7 @@ export 'snapshot_graph.dart'
+         HeapSnapshotObjectNoData,
+         HeapSnapshotObjectNullData;
+ 
+-const String vmServiceVersion = '4.20.0';
++const String vmServiceVersion = '4.21.0';
+ 
+ /// @optional
+ const String optional = 'optional';
+@@ -2769,6 +2769,9 @@ class BoundVariable extends Response {
+   /// [value] can be one of [InstanceRef], [TypeArgumentsRef] or [Sentinel].
+   dynamic value;
+ 
++  /// The declared type of this variable.
++  InstanceRef? declaredType;
++
+   /// The token position where this variable was declared.
+   int? declarationTokenPos;
+ 
+@@ -2781,6 +2784,7 @@ class BoundVariable extends Response {
+   BoundVariable({
+     this.name,
+     this.value,
++    this.declaredType,
+     this.declarationTokenPos,
+     this.scopeStartTokenPos,
+     this.scopeEndTokenPos,
+@@ -2790,6 +2794,9 @@ class BoundVariable extends Response {
+       : name = json['name'] ?? '',
+         value = createServiceObject(json['value'],
+             const ['InstanceRef', 'TypeArgumentsRef', 'Sentinel']),
++        declaredType =
++            createServiceObject(json['declaredType'], const ['InstanceRef'])
++                as InstanceRef?,
+         declarationTokenPos = json['declarationTokenPos'] ?? -1,
+         scopeStartTokenPos = json['scopeStartTokenPos'] ?? -1,
+         scopeEndTokenPos = json['scopeEndTokenPos'] ?? -1,
+@@ -2803,6 +2810,7 @@ class BoundVariable extends Response {
+         'type': type,
+         'name': name ?? '',
+         'value': value?.toJson(),
++        'declaredType': declaredType?.toJson(),
+         'declarationTokenPos': declarationTokenPos ?? -1,
+         'scopeStartTokenPos': scopeStartTokenPos ?? -1,
+         'scopeEndTokenPos': scopeEndTokenPos ?? -1,
+@@ -2810,7 +2818,8 @@ class BoundVariable extends Response {
+ 
+   @override
+   String toString() => '[BoundVariable ' //
+-      'name: $name, value: $value, declarationTokenPos: $declarationTokenPos, ' //
++      'name: $name, value: $value, declaredType: $declaredType, ' //
++      'declarationTokenPos: $declarationTokenPos, ' //
+       'scopeStartTokenPos: $scopeStartTokenPos, scopeEndTokenPos: $scopeEndTokenPos]';
+ }
+ 
+diff --git a/runtime/vm/debugger.cc b/runtime/vm/debugger.cc
+index 7389c1529f7..828d06e7e07 100644
+--- a/runtime/vm/debugger.cc
++++ b/runtime/vm/debugger.cc
+@@ -1154,6 +1154,59 @@ static bool IsPrivateVariableName(const String& var_name) {
+   return (var_name.Length() >= 1) && (var_name.CharAt(0) == '_');
+ }
+ 
++static bool TryGetDeclaredTypeForLocalVariable(
++    ActivationFrame* frame,
++    const String& var_name,
++    const UntaggedLocalVarDescriptors::VarInfo& var_info,
++    AbstractType* declared_type) {
++  ASSERT(declared_type != nullptr);
++#if defined(DART_DYNAMIC_MODULES) && !defined(PRODUCT) &&                      \
++    !defined(DART_PRECOMPILED_RUNTIME)
++  if (!frame->IsInterpreted() || !frame->bytecode().HasLocalVariablesInfo()) {
++    return false;
++  }
++
++  const intptr_t pc_offset = frame->pc() - frame->PayloadStart();
++  bytecode::BytecodeLocalVariablesIterator local_vars(Thread::Current()->zone(),
++                                                      frame->bytecode());
++  String& local_name = String::Handle();
++  AbstractType& local_type = AbstractType::Handle();
++  while (local_vars.MoveNext()) {
++    if (!local_vars.IsVariableDeclaration()) {
++      continue;
++    }
++    if (!((local_vars.StartPC() <= pc_offset) &&
++          (pc_offset <= local_vars.EndPC()))) {
++      continue;
++    }
++    if (local_vars.Index() != var_info.index()) {
++      continue;
++    }
++    if (local_vars.DeclarationTokenPos() != var_info.declaration_pos ||
++        local_vars.StartTokenPos() != var_info.begin_pos ||
++        local_vars.EndTokenPos() != var_info.end_pos) {
++      continue;
++    }
++    local_name = local_vars.Name();
++    if (!local_name.Equals(var_name)) {
++      continue;
++    }
++    local_type = local_vars.Type();
++    if (local_type.IsNull()) {
++      return false;
++    }
++    *declared_type = local_type.ptr();
++    return true;
++  }
++#else
++  USE(frame);
++  USE(var_name);
++  USE(var_info);
++  USE(declared_type);
++#endif
++  return false;
++}
++
+ ObjectPtr ActivationFrame::EvaluateCompiledExpression(
+     const ExternalTypedData& kernel_buffer,
+     const Array& type_definitions,
+@@ -1326,6 +1379,7 @@ void ActivationFrame::PrintToJSONObject(JSONObject* jsobj) {
+ 
+ void ActivationFrame::PrintToJSONObjectRegular(JSONObject* jsobj) {
+   const Script& script = Script::Handle(SourceScript());
++  AbstractType& declared_type = AbstractType::Handle();
+   jsobj->AddProperty("type", "Frame");
+   jsobj->AddProperty("kind", KindToCString(kind_));
+   const TokenPosition& pos = TokenPos();
+@@ -1348,11 +1402,18 @@ void ActivationFrame::PrintToJSONObjectRegular(JSONObject* jsobj) {
+       VariableAt(v, &var_name, &declaration_token_pos, &visible_start_token_pos,
+                  &visible_end_token_pos, &var_value);
+       if (!IsSyntheticVariableName(var_name)) {
++        const intptr_t desc_index = desc_indices_[v];
++        UntaggedLocalVarDescriptors::VarInfo var_info;
++        var_descriptors_.GetInfo(desc_index, &var_info);
+         JSONObject jsvar(&jsvars);
+         jsvar.AddProperty("type", "BoundVariable");
+         const char* scrubbed_var_name = String::ScrubName(var_name);
+         jsvar.AddProperty("name", scrubbed_var_name);
+         jsvar.AddProperty("value", var_value);
++        if (TryGetDeclaredTypeForLocalVariable(this, var_name, var_info,
++                                               &declared_type)) {
++          jsvar.AddProperty("declaredType", declared_type);
++        }
+         // Where was the variable declared?
+         jsvar.AddProperty("declarationTokenPos", declaration_token_pos);
+         // When the variable becomes visible to the scope.
+diff --git a/runtime/vm/service.h b/runtime/vm/service.h
+index 42a85d132cf..c7716db6fcc 100644
+--- a/runtime/vm/service.h
++++ b/runtime/vm/service.h
+@@ -19,7 +19,7 @@
+ namespace dart {
+ 
+ #define SERVICE_PROTOCOL_MAJOR_VERSION 4
+-#define SERVICE_PROTOCOL_MINOR_VERSION 20
++#define SERVICE_PROTOCOL_MINOR_VERSION 21
+ 
+ class Array;
+ class EmbedderServiceHandler;

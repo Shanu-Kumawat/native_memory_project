@@ -1,0 +1,49 @@
+diff --git a/runtime/vm/debugger.cc b/runtime/vm/debugger.cc
+index 828d06e7e07..027972f27f4 100644
+--- a/runtime/vm/debugger.cc
++++ b/runtime/vm/debugger.cc
+@@ -1162,23 +1162,40 @@ static bool TryGetDeclaredTypeForLocalVariable(
+   ASSERT(declared_type != nullptr);
+ #if defined(DART_DYNAMIC_MODULES) && !defined(PRODUCT) &&                      \
+     !defined(DART_PRECOMPILED_RUNTIME)
+-  if (!frame->IsInterpreted() || !frame->bytecode().HasLocalVariablesInfo()) {
++  const Bytecode& metadata_bytecode = Bytecode::Handle();
++  bool constrain_by_pc = false;
++  intptr_t pc_offset = 0;
++
++  if (frame->IsInterpreted() && frame->bytecode().HasLocalVariablesInfo()) {
++    metadata_bytecode ^= frame->bytecode();
++    constrain_by_pc = true;
++    pc_offset = frame->pc() - frame->PayloadStart();
++  } else if (frame->function().HasBytecode()) {
++    metadata_bytecode ^= frame->function().GetBytecode();
++  }
++
++  if (metadata_bytecode.IsNull() || !metadata_bytecode.HasLocalVariablesInfo()) {
+     return false;
+   }
+ 
+-  const intptr_t pc_offset = frame->pc() - frame->PayloadStart();
+   bytecode::BytecodeLocalVariablesIterator local_vars(Thread::Current()->zone(),
+-                                                      frame->bytecode());
++                                                      metadata_bytecode);
+   String& local_name = String::Handle();
+   AbstractType& local_type = AbstractType::Handle();
++  const TokenPosition frame_token_pos = frame->TokenPos();
+   while (local_vars.MoveNext()) {
+     if (!local_vars.IsVariableDeclaration()) {
+       continue;
+     }
+-    if (!((local_vars.StartPC() <= pc_offset) &&
++    if (constrain_by_pc &&
++        !((local_vars.StartPC() <= pc_offset) &&
+           (pc_offset <= local_vars.EndPC()))) {
+       continue;
+     }
++    if (!frame_token_pos.IsWithin(local_vars.StartTokenPos(),
++                                  local_vars.EndTokenPos())) {
++      continue;
++    }
+     if (local_vars.Index() != var_info.index()) {
+       continue;
+     }

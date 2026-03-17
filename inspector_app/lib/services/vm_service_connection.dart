@@ -256,6 +256,15 @@ class VmServiceConnection {
         final frames = stack.frames ?? <Frame>[];
         _log('Stack has ${frames.length} frames');
 
+        final localCandidates =
+            <({
+              String name,
+              InstanceRef ref,
+              String? declaredTypeName,
+              int frameIndex,
+              int? declarationTokenPos,
+            })>[];
+
         for (int fi = 0; fi < frames.length; fi++) {
           final frame = frames[fi];
           final vars = frame.vars ?? <BoundVariable>[];
@@ -266,22 +275,37 @@ class VmServiceConnection {
 
           for (final variable in vars) {
             final value = variable.value;
-            if (value is InstanceRef) {
-              final className = value.classRef?.name ?? '';
-              final declaredTypeName = variable.declaredType?.name;
-              _log('  var "${variable.name}": class=$className');
-              if (declaredTypeName != null) {
-                _log('    declaredType: $declaredTypeName');
-              }
-              final pointerData = await _tryExtractPointer(
-                variable.name ?? 'unknown',
-                value,
-                declaredTypeName: declaredTypeName,
-              );
-              if (pointerData != null) {
-                pointers.add(pointerData);
-              }
+            if (value is! InstanceRef) continue;
+
+            final className = value.classRef?.name ?? '';
+            final declaredTypeName = variable.declaredType?.name;
+            _log('  var "${variable.name}": class=$className');
+            if (declaredTypeName != null) {
+              _log('    declaredType: $declaredTypeName');
             }
+
+            if (className == 'Pointer' || className.startsWith('Pointer<')) {
+              localCandidates.add((
+                name: variable.name ?? 'unknown',
+                ref: value,
+                declaredTypeName: declaredTypeName,
+                frameIndex: fi,
+                declarationTokenPos: variable.declarationTokenPos,
+              ));
+            }
+          }
+        }
+
+        for (final candidate in localCandidates) {
+          final pointerData = await _tryExtractPointer(
+            candidate.name,
+            candidate.ref,
+            declaredTypeName: candidate.declaredTypeName,
+            frameIndex: candidate.frameIndex,
+            declarationTokenPos: candidate.declarationTokenPos,
+          );
+          if (pointerData != null) {
+            pointers.add(pointerData);
           }
         }
       } catch (e) {
@@ -377,6 +401,8 @@ class VmServiceConnection {
     String varName,
     InstanceRef ref, {
     String? declaredTypeName,
+    int? frameIndex,
+    int? declarationTokenPos,
   }) async {
     final className = ref.classRef?.name ?? '';
 
@@ -394,8 +420,22 @@ class VmServiceConnection {
     _log('    instanceRef.kind: $instanceKind');
 
     try {
-      final instance =
-          await _service!.getObject(_isolateId!, ref.id!) as Instance;
+      final instance = await _resolvePointerInstance(
+        ref,
+        variableName: varName,
+        frameIndex: frameIndex,
+        declarationTokenPos: declarationTokenPos,
+      );
+      if (instance == null) {
+        return PointerData(
+          variableName: varName,
+          nativeType: 'Unknown',
+          address: 0,
+          structSize: 0,
+          fields: const [],
+          error: 'Pointer instance expired before inspection',
+        );
+      }
 
       int address = 0;
       String nativeType = 'Unknown';
@@ -516,6 +556,68 @@ class VmServiceConnection {
         fields: [],
         error: 'Failed to inspect: $e',
       );
+    }
+  }
+
+  bool _isExpiredSentinelError(Object error) {
+    final s = error.toString();
+    return s.contains('Sentinel kind: Expired') ||
+        s.contains('<expired>') ||
+        s.contains('kind: Expired');
+  }
+
+  Future<Instance?> _resolvePointerInstance(
+    InstanceRef initialRef, {
+    required String variableName,
+    int? frameIndex,
+    int? declarationTokenPos,
+  }) async {
+    if (_service == null || _isolateId == null) return null;
+
+    try {
+      return await _service!.getObject(_isolateId!, initialRef.id!) as Instance;
+    } catch (error) {
+      if (!_isExpiredSentinelError(error)) rethrow;
+      _log('    instance id expired; retrying via fresh stack lookup');
+    }
+
+    if (frameIndex == null) return null;
+
+    try {
+      final refreshedStack = await _service!.getStack(_isolateId!);
+      final frames = refreshedStack.frames ?? const <Frame>[];
+      if (frameIndex < 0 || frameIndex >= frames.length) return null;
+      final vars = frames[frameIndex].vars ?? const <BoundVariable>[];
+
+      BoundVariable? match;
+      for (final v in vars) {
+        if (v.name != variableName) continue;
+        if (declarationTokenPos != null &&
+            v.declarationTokenPos != declarationTokenPos) {
+          continue;
+        }
+        match = v;
+        break;
+      }
+      if (match == null) {
+        for (final v in vars) {
+          if (v.name == variableName) {
+            match = v;
+            break;
+          }
+        }
+      }
+      if (match == null) return null;
+      final value = match.value;
+      if (value is! InstanceRef) return null;
+      final className = value.classRef?.name ?? '';
+      if (className != 'Pointer' && !className.startsWith('Pointer<')) {
+        return null;
+      }
+      return await _service!.getObject(_isolateId!, value.id!) as Instance;
+    } catch (error) {
+      _log('    retry after expiration failed: $error');
+      return null;
     }
   }
 

@@ -4,7 +4,6 @@
 // through the Dart VM Service Protocol.
 
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import 'models/pointer_data.dart' as models;
 import 'services/vm_service_connection.dart';
@@ -154,13 +153,12 @@ class _InspectorPageState extends State<InspectorPage> {
     return Scaffold(
       body: Column(
         children: [
-          _titleBar(),
           Expanded(
             child: Row(
               children: [
                 // ─── Sidebar ───
                 SizedBox(
-                  width: 260,
+                  width: 360,
                   child: PointerSidebar(
                     pointers: _state.pointers,
                     selectedIndex: _state.selectedPointerIndex,
@@ -211,91 +209,6 @@ class _InspectorPageState extends State<InspectorPage> {
         ],
       ),
     );
-  }
-
-  Widget _titleBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: const BoxDecoration(
-        color: InspectorTheme.surface,
-        border: Border(bottom: BorderSide(color: InspectorTheme.border)),
-      ),
-      child: Row(
-        children: [
-          // Logo
-          Container(
-            padding: const EdgeInsets.all(5),
-            decoration: BoxDecoration(
-              color: InspectorTheme.accent.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: const Icon(
-              Icons.memory,
-              size: 16,
-              color: InspectorTheme.accent,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            'Native Memory Inspector',
-            style: GoogleFonts.inter(
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              color: InspectorTheme.text,
-              letterSpacing: -0.3,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-            decoration: BoxDecoration(
-              color: InspectorTheme.warning.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(3),
-            ),
-            child: Text(
-              'GSoC',
-              style: InspectorTheme.monoSmall.copyWith(
-                color: InspectorTheme.warning,
-                fontSize: 9,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-          const Spacer(),
-          // Connection indicator
-          _connectionDot(),
-          const SizedBox(width: 6),
-          Text(
-            _connectionLabel(),
-            style: InspectorTheme.label.copyWith(fontSize: 10),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _connectionDot() {
-    final color = switch (_state.connectionState) {
-      models.ConnectionState.connected => InspectorTheme.success,
-      models.ConnectionState.connecting => InspectorTheme.warning,
-      models.ConnectionState.error => InspectorTheme.error,
-      models.ConnectionState.disconnected => InspectorTheme.textDim,
-    };
-    return Container(
-      width: 6,
-      height: 6,
-      decoration: BoxDecoration(shape: BoxShape.circle, color: color),
-    );
-  }
-
-  String _connectionLabel() {
-    return switch (_state.connectionState) {
-      models.ConnectionState.connected =>
-        '${_state.vmName} ${_state.vmVersion}',
-      models.ConnectionState.connecting => 'Connecting...',
-      models.ConnectionState.error => 'Connection failed',
-      models.ConnectionState.disconnected => 'Disconnected',
-    };
   }
 
   Widget _emptyState() {

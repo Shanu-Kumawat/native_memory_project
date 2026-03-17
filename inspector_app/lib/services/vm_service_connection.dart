@@ -815,6 +815,24 @@ class VmServiceConnection {
         offset = computedOffset;
       }
 
+      // Refine size/type using authoritative VM layout metadata.
+      int? knownSize;
+      if (evaluatedOffsets.containsKey(name)) {
+        if (isUnion && totalSize > 0) {
+          knownSize = totalSize;
+        } else if (i + 1 < fieldNames.length &&
+            evaluatedOffsets.containsKey(fieldNames[i + 1])) {
+          knownSize = evaluatedOffsets[fieldNames[i + 1]]! - offset;
+        } else if (totalSize > 0) {
+          knownSize = totalSize - offset;
+        }
+      }
+      if (knownSize != null && knownSize > 0) {
+        final refined = _refineMappedTypeWithSize(rawType, mapped, knownSize);
+        typeName = refined.typeName;
+        size = refined.size;
+      }
+
       fields.add(
         StructField(name: name, typeName: typeName, offset: offset, size: size),
       );
@@ -941,6 +959,32 @@ class VmServiceConnection {
       'X0' => (typeName: 'Double', size: 8),
       _ => (typeName: rawType, size: 8), // Default to pointer size
     };
+  }
+
+  /// Refines a mapped type using an authoritative size from VM layout metadata.
+  ({String typeName, int size}) _refineMappedTypeWithSize(
+    String rawType,
+    ({String typeName, int size}) mapped,
+    int knownSize,
+  ) {
+    if (rawType == 'int') {
+      return switch (knownSize) {
+        1 => (typeName: 'Int8', size: 1),
+        2 => (typeName: 'Int16', size: 2),
+        4 => (typeName: 'Int32', size: 4),
+        8 => (typeName: 'Int64', size: 8),
+        _ => (typeName: mapped.typeName, size: knownSize),
+      };
+    }
+    if (rawType == 'double') {
+      return switch (knownSize) {
+        4 => (typeName: 'Float', size: 4),
+        8 => (typeName: 'Double', size: 8),
+        _ => (typeName: mapped.typeName, size: knownSize),
+      };
+    }
+    // For complex/non-ambiguous types, preserve type and trust known size.
+    return (typeName: mapped.typeName, size: knownSize);
   }
 
   /// Insert synthetic padding fields between struct fields where gaps exist.

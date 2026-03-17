@@ -1,0 +1,264 @@
+diff --git a/runtime/vm/debugger.cc b/runtime/vm/debugger.cc
+index 7389c1529f7..41ebf3aff1f 100644
+--- a/runtime/vm/debugger.cc
++++ b/runtime/vm/debugger.cc
+@@ -1154,6 +1154,76 @@ static bool IsPrivateVariableName(const String& var_name) {
+   return (var_name.Length() >= 1) && (var_name.CharAt(0) == '_');
+ }
+ 
++static bool TryGetDeclaredTypeForLocalVariable(
++    ActivationFrame* frame,
++    const String& var_name,
++    const UntaggedLocalVarDescriptors::VarInfo& var_info,
++    AbstractType* declared_type) {
++  ASSERT(declared_type != nullptr);
++#if defined(DART_DYNAMIC_MODULES) && !defined(PRODUCT) &&                      \
++    !defined(DART_PRECOMPILED_RUNTIME)
++  const Bytecode& metadata_bytecode = Bytecode::Handle();
++  bool constrain_by_pc = false;
++  intptr_t pc_offset = 0;
++
++  if (frame->IsInterpreted() && frame->bytecode().HasLocalVariablesInfo()) {
++    metadata_bytecode ^= frame->bytecode();
++    constrain_by_pc = true;
++    pc_offset = frame->pc() - frame->PayloadStart();
++  } else if (frame->function().HasBytecode()) {
++    metadata_bytecode ^= frame->function().GetBytecode();
++  }
++
++  if (metadata_bytecode.IsNull() || !metadata_bytecode.HasLocalVariablesInfo()) {
++    return false;
++  }
++
++  bytecode::BytecodeLocalVariablesIterator local_vars(Thread::Current()->zone(),
++                                                      metadata_bytecode);
++  String& local_name = String::Handle();
++  AbstractType& local_type = AbstractType::Handle();
++  const TokenPosition frame_token_pos = frame->TokenPos();
++  while (local_vars.MoveNext()) {
++    if (!local_vars.IsVariableDeclaration()) {
++      continue;
++    }
++    if (constrain_by_pc &&
++        !((local_vars.StartPC() <= pc_offset) &&
++          (pc_offset <= local_vars.EndPC()))) {
++      continue;
++    }
++    if (!frame_token_pos.IsWithin(local_vars.StartTokenPos(),
++                                  local_vars.EndTokenPos())) {
++      continue;
++    }
++    if (local_vars.Index() != var_info.index()) {
++      continue;
++    }
++    if (local_vars.DeclarationTokenPos() != var_info.declaration_pos ||
++        local_vars.StartTokenPos() != var_info.begin_pos ||
++        local_vars.EndTokenPos() != var_info.end_pos) {
++      continue;
++    }
++    local_name = local_vars.Name();
++    if (!local_name.Equals(var_name)) {
++      continue;
++    }
++    local_type = local_vars.Type();
++    if (local_type.IsNull()) {
++      return false;
++    }
++    *declared_type = local_type.ptr();
++    return true;
++  }
++#else
++  USE(frame);
++  USE(var_name);
++  USE(var_info);
++  USE(declared_type);
++#endif
++  return false;
++}
++
+ ObjectPtr ActivationFrame::EvaluateCompiledExpression(
+     const ExternalTypedData& kernel_buffer,
+     const Array& type_definitions,
+@@ -1326,6 +1396,7 @@ void ActivationFrame::PrintToJSONObject(JSONObject* jsobj) {
+ 
+ void ActivationFrame::PrintToJSONObjectRegular(JSONObject* jsobj) {
+   const Script& script = Script::Handle(SourceScript());
++  AbstractType& declared_type = AbstractType::Handle();
+   jsobj->AddProperty("type", "Frame");
+   jsobj->AddProperty("kind", KindToCString(kind_));
+   const TokenPosition& pos = TokenPos();
+@@ -1348,11 +1419,22 @@ void ActivationFrame::PrintToJSONObjectRegular(JSONObject* jsobj) {
+       VariableAt(v, &var_name, &declaration_token_pos, &visible_start_token_pos,
+                  &visible_end_token_pos, &var_value);
+       if (!IsSyntheticVariableName(var_name)) {
++        const intptr_t desc_index = desc_indices_[v];
++        UntaggedLocalVarDescriptors::VarInfo var_info;
++        var_descriptors_.GetInfo(desc_index, &var_info);
++        declared_type = var_descriptors_.GetDeclaredType(desc_index);
+         JSONObject jsvar(&jsvars);
+         jsvar.AddProperty("type", "BoundVariable");
+         const char* scrubbed_var_name = String::ScrubName(var_name);
+         jsvar.AddProperty("name", scrubbed_var_name);
+         jsvar.AddProperty("value", var_value);
++        if (declared_type.IsNull()) {
++          TryGetDeclaredTypeForLocalVariable(this, var_name, var_info,
++                                             &declared_type);
++        }
++        if (!declared_type.IsNull()) {
++          jsvar.AddProperty("declaredType", declared_type);
++        }
+         // Where was the variable declared?
+         jsvar.AddProperty("declarationTokenPos", declaration_token_pos);
+         // When the variable becomes visible to the scope.
+diff --git a/runtime/vm/object.cc b/runtime/vm/object.cc
+index 2d611879f7b..9a9976c333f 100644
+--- a/runtime/vm/object.cc
++++ b/runtime/vm/object.cc
+@@ -1137,6 +1137,8 @@ void Object::Init(IsolateGroup* isolate_group) {
+         static_cast<LocalVarDescriptorsPtr>(address + kHeapObjectTag));
+     empty_var_descriptors_->StoreNonPointer(
+         &empty_var_descriptors_->untag()->num_entries_, 0);
++    empty_var_descriptors_->untag()->set_declared_types_data(
++        Object::null_array().ptr());
+     empty_var_descriptors_->SetCanonical();
+   }
+ 
+@@ -16878,6 +16880,20 @@ StringPtr LocalVarDescriptors::GetName(intptr_t var_index) const {
+   return ptr()->untag()->name(var_index);
+ }
+ 
++AbstractTypePtr LocalVarDescriptors::GetDeclaredType(intptr_t var_index) const {
++  ASSERT(var_index < Length());
++  const Array& declared_types = Array::Handle(ptr()->untag()->declared_types_data());
++  if (declared_types.IsNull() || (declared_types.Length() != Length())) {
++    return AbstractType::null();
++  }
++  const Object& value = Object::Handle(declared_types.At(var_index));
++  if (value.IsNull()) {
++    return AbstractType::null();
++  }
++  ASSERT(value.IsAbstractType());
++  return AbstractType::Cast(value).ptr();
++}
++
+ void LocalVarDescriptors::SetVar(
+     intptr_t var_index,
+     const String& name,
+@@ -16888,6 +16904,22 @@ void LocalVarDescriptors::SetVar(
+   ptr()->untag()->data()[var_index] = *info;
+ }
+ 
++void LocalVarDescriptors::SetDeclaredType(intptr_t var_index,
++                                          const AbstractType& type) const {
++  ASSERT(var_index < Length());
++  Array& declared_types = Array::Handle(ptr()->untag()->declared_types_data());
++  if (declared_types.IsNull() || (declared_types.Length() != Length())) {
++    declared_types = Array::New(Length(), Heap::kOld);
++    ptr()->untag()->set_declared_types_data(declared_types.ptr());
++  }
++  declared_types.SetAt(var_index, type);
++}
++
++void LocalVarDescriptors::SetDeclaredTypes(const Array& types) const {
++  ASSERT(types.IsNull() || (types.Length() == Length()));
++  ptr()->untag()->set_declared_types_data(types.ptr());
++}
++
+ void LocalVarDescriptors::GetInfo(
+     intptr_t var_index,
+     UntaggedLocalVarDescriptors::VarInfo* info) const {
+@@ -16988,6 +17020,7 @@ LocalVarDescriptorsPtr LocalVarDescriptors::New(intptr_t num_variables) {
+   auto raw = Object::Allocate<LocalVarDescriptors>(Heap::kOld, num_variables);
+   NoSafepointScope no_safepoint;
+   raw->untag()->num_entries_ = num_variables;
++  raw->untag()->set_declared_types_data(Object::null_array().ptr());
+   return raw;
+ }
+ 
+diff --git a/runtime/vm/object.h b/runtime/vm/object.h
+index 8b110ac64ae..a8f766a1989 100644
+--- a/runtime/vm/object.h
++++ b/runtime/vm/object.h
+@@ -6231,10 +6231,13 @@ class LocalVarDescriptors : public Object {
+   intptr_t Length() const;
+ 
+   StringPtr GetName(intptr_t var_index) const;
++  AbstractTypePtr GetDeclaredType(intptr_t var_index) const;
+ 
+   void SetVar(intptr_t var_index,
+               const String& name,
+               UntaggedLocalVarDescriptors::VarInfo* info) const;
++  void SetDeclaredType(intptr_t var_index, const AbstractType& type) const;
++  void SetDeclaredTypes(const Array& types) const;
+ 
+   void GetInfo(intptr_t var_index,
+                UntaggedLocalVarDescriptors::VarInfo* info) const;
+diff --git a/runtime/vm/raw_object.h b/runtime/vm/raw_object.h
+index 4274c8e3240..72856802255 100644
+--- a/runtime/vm/raw_object.h
++++ b/runtime/vm/raw_object.h
+@@ -2541,7 +2541,8 @@ class UntaggedLocalVarDescriptors : public UntaggedObject {
+   // platforms.
+   uword num_entries_;
+ 
+-  VISIT_FROM_PAYLOAD_START(CompressedStringPtr)
++  COMPRESSED_POINTER_FIELD(ArrayPtr, declared_types_data)
++  VISIT_FROM(declared_types_data)
+   COMPRESSED_VARIABLE_POINTER_FIELDS(StringPtr, name, names)
+ 
+   CompressedStringPtr* nameAddrAt(intptr_t i) { return &(names()[i]); }
+diff --git a/runtime/vm/scopes.cc b/runtime/vm/scopes.cc
+index c846310571b..88677509ab8 100644
+--- a/runtime/vm/scopes.cc
++++ b/runtime/vm/scopes.cc
+@@ -257,6 +257,7 @@ LocalVarDescriptorsPtr LocalScope::GetVarDescriptors(
+ 
+       LocalVarDescriptorsBuilder::VarDesc desc;
+       desc.name = &name;
++      desc.declared_type = context_scope.TypeAt(i);
+       desc.info.set_kind(UntaggedLocalVarDescriptors::kContextVar);
+       desc.info.scope_id = context_scope.ContextLevelAt(i);
+       desc.info.declaration_pos = context_scope.DeclarationTokenIndexAt(i);
+@@ -288,6 +289,7 @@ void LocalScope::CollectLocalVariables(LocalVarDescriptorsBuilder* vars,
+         // own context before calling a closure function.
+         LocalVarDescriptorsBuilder::VarDesc desc;
+         desc.name = &var->name();
++        desc.declared_type = var->static_type().ptr();
+         desc.info.set_kind(UntaggedLocalVarDescriptors::kSavedCurrentContext);
+         desc.info.scope_id = 0;
+         desc.info.declaration_pos = TokenPosition::kMinSource;
+@@ -300,6 +302,7 @@ void LocalScope::CollectLocalVariables(LocalVarDescriptorsBuilder* vars,
+         // This is a regular Dart variable, either stack-based or captured.
+         LocalVarDescriptorsBuilder::VarDesc desc;
+         desc.name = &var->name();
++        desc.declared_type = var->static_type().ptr();
+         if (var->is_captured()) {
+           desc.info.set_kind(UntaggedLocalVarDescriptors::kContextVar);
+           ASSERT(var->owner() != nullptr);
+@@ -752,9 +755,14 @@ LocalVarDescriptorsPtr LocalVarDescriptorsBuilder::Done() {
+   }
+   const LocalVarDescriptors& var_desc =
+       LocalVarDescriptors::Handle(LocalVarDescriptors::New(vars_.length()));
++  Array& declared_types = Array::Handle(Array::New(vars_.length(), Heap::kOld));
++  AbstractType& declared_type = AbstractType::Handle();
+   for (int i = 0; i < vars_.length(); i++) {
+     var_desc.SetVar(i, *(vars_[i].name), &vars_[i].info);
++    declared_type = vars_[i].declared_type;
++    declared_types.SetAt(i, declared_type);
+   }
++  var_desc.SetDeclaredTypes(declared_types);
+   return var_desc.ptr();
+ }
+ 
+diff --git a/runtime/vm/scopes.h b/runtime/vm/scopes.h
+index 7f55dd7fe1f..8a6c8c88084 100644
+--- a/runtime/vm/scopes.h
++++ b/runtime/vm/scopes.h
+@@ -289,6 +289,7 @@ class LocalVarDescriptorsBuilder : public ValueObject {
+  public:
+   struct VarDesc {
+     const String* name;
++    AbstractTypePtr declared_type = AbstractType::null();
+     UntaggedLocalVarDescriptors::VarInfo info;
+   };
+ 

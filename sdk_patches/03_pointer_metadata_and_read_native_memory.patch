@@ -1,36 +1,58 @@
+diff --git a/runtime/vm/object_service.cc b/runtime/vm/object_service.cc
+index e62706f4e05..a16e3cdd057 100644
+--- a/runtime/vm/object_service.cc
++++ b/runtime/vm/object_service.cc
+@@ -1364,7 +1364,22 @@ void Instance::PrintSharedInstanceJSON(JSONObject* jsobj,
+ void Instance::PrintJSONImpl(JSONStream* stream, bool ref) const {
+   JSONObject jsobj(stream);
+   PrintSharedInstanceJSON(&jsobj, ref);
+-  jsobj.AddProperty("kind", "PlainInstance");
++
++  // Emit extra fields for dart:ffi Pointer instances.
++  if (IsPointer()) {
++    jsobj.AddProperty("kind", "Pointer");
++    const auto& pointer = Pointer::Cast(*this);
++    jsobj.AddProperty64("nativeAddress",
++                        static_cast<int64_t>(pointer.NativeAddress()));
++    // May be an erased type argument (for example, `Never`).
++    const AbstractType& type_arg =
++        AbstractType::Handle(pointer.type_argument());
++    if (!type_arg.IsNull()) {
++      jsobj.AddProperty("nativeType", type_arg);
++    }
++  } else {
++    jsobj.AddProperty("kind", "PlainInstance");
++  }
+ 
+   GrowableArray<Class*> classes;
+   Array& field_array = Array::Handle();
 diff --git a/runtime/vm/service.cc b/runtime/vm/service.cc
-index cda9becb14f..e2e243ffb69 100644
+index cda9becb14f..31b71c146c9 100644
 --- a/runtime/vm/service.cc
 +++ b/runtime/vm/service.cc
-@@ -6171,6 +6171,157 @@ static void GetDefaultClassesAliases(Thread* thread, JSONStream* js) {
+@@ -8,6 +8,16 @@
+ #include <memory>
+ #include <utility>
+ 
++#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)
++#include <sys/uio.h>
++#include <unistd.h>
++#elif defined(DART_HOST_OS_MACOS)
++#include <mach/mach.h>
++#include <mach/mach_vm.h>
++#elif defined(DART_HOST_OS_WINDOWS)
++#include <windows.h>
++#endif
++
+ #include "include/dart_api.h"
+ #include "include/dart_native_api.h"
+ #include "platform/globals.h"
+@@ -6171,6 +6181,125 @@ static void GetDefaultClassesAliases(Thread* thread, JSONStream* js) {
  #undef DEFINE_ADD_VALUE_F
  }
  
-+// ---------- readNativeMemory RPC (cross-platform) ----------
-+// Reads raw bytes from a native memory address using kernel-mediated
-+// safe reads. Each platform uses its own safe-read syscall that validates
-+// the address range without triggering SIGSEGV/access violation.
-+//
-+// Platform details:
-+//   Linux/Android: process_vm_readv(getpid(), ...) — reads from own process
-+//   macOS/iOS:     mach_vm_read_overwrite(mach_task_self(), ...) — self-read
-+//   Windows:       ReadProcessMemory(GetCurrentProcess(), ...) — self-read
-+//
-+// All approaches read from the SAME process:
-+//   - No cross-process permissions needed
-+//   - macOS SIP restrictions don't apply (mach_task_self() is always allowed)
-+//   - Windows requires no elevated privileges
-+//   - Kernel/OS validates addresses — no crash risk
-+
-+#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)
-+#include <sys/uio.h>   // for struct iovec, process_vm_readv
-+#include <unistd.h>    // for getpid
-+#elif defined(DART_HOST_OS_MACOS)
-+#include <mach/mach.h>     // for mach_task_self, kern_return_t
-+#include <mach/mach_vm.h>  // for mach_vm_read_overwrite
-+#elif defined(DART_HOST_OS_WINDOWS)
-+#include <windows.h>    // for ReadProcessMemory, GetCurrentProcess
-+#endif
++// Reads raw bytes from a native memory address using platform APIs that report
++// failures as errors instead of crashing the process.
 +
 +static const MethodParameter* const read_native_memory_params[] = {
 +    RUNNABLE_ISOLATE_PARAMETER,
@@ -40,6 +62,7 @@ index cda9becb14f..e2e243ffb69 100644
 +};
 +
 +static void ReadNativeMemory(Thread* thread, JSONStream* js) {
++  USE(thread);
 +  const uint64_t address =
 +      UIntParameter::Parse(js->LookupParam("address"));
 +  uint64_t count =
@@ -55,6 +78,10 @@ index cda9becb14f..e2e243ffb69 100644
 +    js->PrintError(kInvalidParams, "Cannot read from null address (0x0)");
 +    return;
 +  }
++  if (count == 0) {
++    js->PrintError(kInvalidParams, "Parameter 'count' must be > 0");
++    return;
++  }
 +
 +  uint8_t* buffer = reinterpret_cast<uint8_t*>(malloc(count));
 +  if (buffer == nullptr) {
@@ -62,12 +89,10 @@ index cda9becb14f..e2e243ffb69 100644
 +    return;
 +  }
 +
-+  ssize_t bytes_read = -1;
++  intptr_t bytes_read = -1;
 +
 +#if defined(DART_HOST_OS_LINUX) || defined(DART_HOST_OS_ANDROID)
-+  // Linux/Android: process_vm_readv with our own PID.
-+  // The kernel validates the address range and returns -1 (EFAULT) for
-+  // invalid/unmapped addresses, instead of triggering SIGSEGV.
++  // Read from our own process.
 +  struct iovec local_iov;
 +  local_iov.iov_base = buffer;
 +  local_iov.iov_len = count;
@@ -76,55 +101,44 @@ index cda9becb14f..e2e243ffb69 100644
 +  remote_iov.iov_base = reinterpret_cast<void*>(address);
 +  remote_iov.iov_len = count;
 +
-+  bytes_read = process_vm_readv(
-+      getpid(),     // Read from our own process
++  bytes_read = static_cast<intptr_t>(process_vm_readv(
++      getpid(),
 +      &local_iov, 1,
 +      &remote_iov, 1,
-+      0);
++      0));
 +
 +#elif defined(DART_HOST_OS_MACOS)
-+  // macOS/iOS: mach_vm_read_overwrite with mach_task_self().
-+  // mach_task_self() returns the task port for the current process,
-+  // which always has VM_PROT_READ permission on its own memory.
-+  // SIP restrictions do not apply to self-targeted reads.
-+  // Invalid addresses return KERN_INVALID_ADDRESS, no crash.
 +  mach_vm_size_t bytes_read_mach = 0;
 +  kern_return_t kr = mach_vm_read_overwrite(
-+      mach_task_self(),                      // Our own task port
++      mach_task_self(),
 +      static_cast<mach_vm_address_t>(address),
 +      static_cast<mach_vm_size_t>(count),
 +      reinterpret_cast<mach_vm_address_t>(buffer),
 +      &bytes_read_mach);
 +
 +  if (kr == KERN_SUCCESS) {
-+    bytes_read = static_cast<ssize_t>(bytes_read_mach);
++    bytes_read = static_cast<intptr_t>(bytes_read_mach);
 +  } else {
 +    bytes_read = -1;
 +  }
 +
 +#elif defined(DART_HOST_OS_WINDOWS)
-+  // Windows: ReadProcessMemory with GetCurrentProcess().
-+  // GetCurrentProcess() returns a pseudo-handle that always has
-+  // PROCESS_VM_READ access to the current process's memory.
-+  // Invalid addresses return FALSE and GetLastError() == ERROR_PARTIAL_COPY
-+  // or ERROR_NOACCESS, no crash/exception.
 +  SIZE_T bytes_read_win = 0;
 +  BOOL ok = ReadProcessMemory(
-+      GetCurrentProcess(),                     // Our own process handle
++      GetCurrentProcess(),
 +      reinterpret_cast<LPCVOID>(address),
 +      buffer,
 +      static_cast<SIZE_T>(count),
 +      &bytes_read_win);
 +
 +  if (ok) {
-+    bytes_read = static_cast<ssize_t>(bytes_read_win);
++    bytes_read = static_cast<intptr_t>(bytes_read_win);
 +  } else {
 +    bytes_read = -1;
 +  }
 +
 +#elif defined(DART_HOST_OS_FUCHSIA)
-+  // Fuchsia: zx_process_read_memory with zx_process_self().
-+  // Not yet implemented — Fuchsia support is a stretch goal.
++  // Not yet implemented.
 +  bytes_read = -1;
 +
 +#else
@@ -141,7 +155,6 @@ index cda9becb14f..e2e243ffb69 100644
 +    return;
 +  }
 +
-+  // Build the JSON response with bytes as an integer array.
 +  JSONObject response(js);
 +  response.AddProperty("type", "NativeMemory");
 +  response.AddProperty64("address", static_cast<int64_t>(address));
@@ -149,7 +162,7 @@ index cda9becb14f..e2e243ffb69 100644
 +
 +  {
 +    JSONArray bytes_array(&response, "bytes");
-+    for (ssize_t i = 0; i < bytes_read; i++) {
++    for (intptr_t i = 0; i < bytes_read; i++) {
 +      bytes_array.AddValue(static_cast<intptr_t>(buffer[i]));
 +    }
 +  }
@@ -160,7 +173,7 @@ index cda9becb14f..e2e243ffb69 100644
  // clang-format off
  static const ServiceMethodDescriptor service_methods_[] = {
    { "_echo", Echo,
-@@ -6338,6 +6489,8 @@ static const ServiceMethodDescriptor service_methods_[] = {
+@@ -6338,6 +6467,8 @@ static const ServiceMethodDescriptor service_methods_[] = {
      collect_all_garbage_params },
    { "_getDefaultClassesAliases", GetDefaultClassesAliases,
      get_default_classes_aliases_params },

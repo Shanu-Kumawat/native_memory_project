@@ -1,10 +1,9 @@
 /// VM Service connection manager for live pointer inspection.
 ///
-/// Supports two modes:
-/// 1. Standard SDK: Uses heuristic type inference + known struct layouts
-/// 2. Custom SDK (Phase 2): Uses enriched protocol data:
-///    - kind: "Pointer" with nativeAddress and nativeType
-///    - _readNativeMemory RPC for safe memory reads
+/// Uses VM-provided metadata only:
+/// - BoundVariable.declaredType for pointer target type
+/// - Pointer instance JSON (kind/nativeAddress/nativeType)
+/// - _readNativeMemory RPC for safe native memory reads
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -61,10 +60,7 @@ class VmServiceConnection {
     // Probe for enriched protocol support
     await _probeEnrichedProtocol();
 
-    return (
-      vmName: vm.name ?? 'Dart VM',
-      vmVersion: vm.version ?? 'unknown',
-    );
+    return (vmName: vm.name ?? 'Dart VM', vmVersion: vm.version ?? 'unknown');
   }
 
   /// Disconnect from the VM Service.
@@ -86,10 +82,11 @@ class VmServiceConnection {
     // Try calling _readNativeMemory with address=1, count=0 to see if it
     // exists. If it returns an error other than "method not found", it exists.
     try {
-      await _service!.callMethod('_readNativeMemory', isolateId: _isolateId, args: {
-        'address': '1',
-        'count': '0',
-      });
+      await _service!.callMethod(
+        '_readNativeMemory',
+        isolateId: _isolateId,
+        args: {'address': '1', 'count': '0'},
+      );
       _hasReadMemoryRpc = true;
       _log('✓ _readNativeMemory RPC is available');
     } catch (e) {
@@ -139,10 +136,8 @@ class VmServiceConnection {
             if (name == null || name.startsWith('_')) continue;
 
             try {
-              final cls = await _service!.getObject(
-                _isolateId!,
-                classRef.id!,
-              ) as Class;
+              final cls =
+                  await _service!.getObject(_isolateId!, classRef.id!) as Class;
 
               // Check if superclass is Struct or Union
               final superName = cls.superClass?.name;
@@ -159,22 +154,6 @@ class VmServiceConnection {
     }
 
     _log('Struct classes found: $_structClassNames');
-  }
-
-  /// Try to infer the struct type for a pointer variable by name matching.
-  String _inferTypeByName(String varName) {
-    final lowerVar = varName.toLowerCase().replaceAll(RegExp(r'[0-9]+$'), '');
-
-    for (final className in _structClassNames) {
-      if (className.toLowerCase() == lowerVar) return className;
-      if (lowerVar.endsWith(className.toLowerCase())) return className;
-      if (lowerVar.contains(className.toLowerCase())) return className;
-    }
-
-    // If only one struct class exists, it's likely the target
-    if (_structClassNames.length == 1) return _structClassNames.first;
-
-    return 'Unknown';
   }
 
   /// Extract `T` from a declared type string like `Pointer<T>` or
@@ -215,11 +194,11 @@ class VmServiceConnection {
       // to resume and wait for the debugger() breakpoint.
       if (pauseKind == EventKind.kPauseStart) {
         _log('Isolate paused at start — resuming to reach debugger()...');
-        
+
         // Subscribe to debug events to detect when we hit the breakpoint
         final completer = Completer<void>();
         StreamSubscription? sub;
-        
+
         sub = _service!.onDebugEvent.listen((event) {
           _log('Debug event: ${event.kind}');
           if (event.kind == EventKind.kPauseBreakpoint ||
@@ -280,20 +259,24 @@ class VmServiceConnection {
         for (int fi = 0; fi < frames.length; fi++) {
           final frame = frames[fi];
           final vars = frame.vars ?? <BoundVariable>[];
-          _log('Frame $fi: ${frame.function?.name ?? "?"} '
-              '(${vars.length} vars)');
+          _log(
+            'Frame $fi: ${frame.function?.name ?? "?"} '
+            '(${vars.length} vars)',
+          );
 
           for (final variable in vars) {
             final value = variable.value;
             if (value is InstanceRef) {
               final className = value.classRef?.name ?? '';
+              final declaredTypeName = variable.declaredType?.name;
               _log('  var "${variable.name}": class=$className');
+              if (declaredTypeName != null) {
+                _log('    declaredType: $declaredTypeName');
+              }
               final pointerData = await _tryExtractPointer(
                 variable.name ?? 'unknown',
                 value,
-                scriptId: frame.location?.script?.id,
-                tokenPos: variable.declarationTokenPos,
-                declaredTypeName: variable.declaredType?.name,
+                declaredTypeName: declaredTypeName,
               );
               if (pointerData != null) {
                 pointers.add(pointerData);
@@ -317,10 +300,8 @@ class VmServiceConnection {
 
           for (final fieldRef in vars) {
             try {
-              final field = await _service!.getObject(
-                _isolateId!,
-                fieldRef.id!,
-              ) as Field;
+              final field =
+                  await _service!.getObject(_isolateId!, fieldRef.id!) as Field;
               final value = field.staticValue;
               if (value is InstanceRef) {
                 final pointerData = await _tryExtractPointer(
@@ -345,8 +326,10 @@ class VmServiceConnection {
         if (p.address != 0) {
           // Read structSize bytes if known, otherwise 64 bytes for untyped pointers
           final readSize = p.structSize > 0 ? p.structSize : 64;
-          _log('Reading $readSize bytes at 0x${p.address.toRadixString(16)} '
-              'for ${p.variableName}...');
+          _log(
+            'Reading $readSize bytes at 0x${p.address.toRadixString(16)} '
+            'for ${p.variableName}...',
+          );
           final bytes = await readNativeMemory(p.address, readSize);
           if (bytes != null) {
             // For unknown pointers, update structSize to bytes read
@@ -385,8 +368,6 @@ class VmServiceConnection {
   Future<PointerData?> _tryExtractPointer(
     String varName,
     InstanceRef ref, {
-    String? scriptId,
-    int? tokenPos,
     String? declaredTypeName,
   }) async {
     final className = ref.classRef?.name ?? '';
@@ -410,7 +391,6 @@ class VmServiceConnection {
 
       int address = 0;
       String nativeType = 'Unknown';
-      String typeSource = 'unknown';
 
       // ── Extract address ──
 
@@ -426,50 +406,21 @@ class VmServiceConnection {
         }
       }
 
-      // Strategy 1: Object fields
-      if (address == 0) {
-        for (final field in instance.fields ?? <BoundField>[]) {
-          final decl = field.decl;
-          if (decl?.name == '_address' || decl?.name == 'address') {
-            final val = field.value;
-            if (val is InstanceRef && val.valueAsString != null) {
-              address = int.tryParse(val.valueAsString!) ?? 0;
-              _log('    address via field: $address');
-            }
-          }
-        }
-      }
-
-      // Strategy 2: Evaluate .address
-      if (address == 0) {
-        try {
-          final evalResult = await _service!.evaluate(
-            _isolateId!,
-            instance.id!,
-            'address',
-          );
-          if (evalResult is InstanceRef && evalResult.valueAsString != null) {
-            address = int.tryParse(evalResult.valueAsString!) ?? 0;
-            _log('    address via evaluate: $address');
-          }
-        } catch (e) {
-          _log('    evaluate("address") failed: $e');
-        }
-      }
-
       _log('    final address: 0x${address.toRadixString(16)}');
 
       // ── Extract type ──
 
       // Strategy -1: Declared variable type from protocol metadata
       // (preferred, robust against Pointer<T> runtime type erasure).
-      final declaredNativeType =
-          _extractNativeTypeFromDeclaredType(declaredTypeName);
+      final declaredNativeType = _extractNativeTypeFromDeclaredType(
+        declaredTypeName,
+      );
       if (declaredNativeType != null) {
         nativeType = declaredNativeType;
-        typeSource = 'declaredType';
-        _log('    ✓ Type resolved via declaredType: $nativeType '
-            '(from $declaredTypeName)');
+        _log(
+          '    ✓ Type resolved via declaredType: $nativeType '
+          '(from $declaredTypeName)',
+        );
       } else if (declaredTypeName != null && declaredTypeName.isNotEmpty) {
         _log('    declaredType present but not usable: $declaredTypeName');
       }
@@ -481,12 +432,7 @@ class VmServiceConnection {
         _log('    ✓ Enriched protocol detected (kind: Pointer)');
       }
 
-      // Strategy 0: Enriched protocol (nativeType in Instance JSON)
-      // NOTE: Due to FFI type erasure, the Dart compiler's FFI transformer
-      // replaces Pointer<MyStruct> → Pointer<Never> at compile time.
-      // So runtime pointer instance metadata may still report "Never".
-      // We now prefer `BoundVariable.declaredType` when available and only
-      // use this/other strategies as compatibility fallbacks.
+      // Secondary metadata source: enriched pointer JSON `nativeType`.
       if (nativeType == 'Unknown' &&
           instanceJson != null &&
           instanceJson.containsKey('nativeType')) {
@@ -496,8 +442,10 @@ class VmServiceConnection {
         if (ntData is Map) {
           // Full Type JSON object: {"type": "@Type", "name": "Never", ...}
           extractedName = ntData['name'] as String?;
-          _log('    nativeType from protocol: $extractedName '
-              '(class: ${ntData['type']})');
+          _log(
+            '    nativeType from protocol: $extractedName '
+            '(class: ${ntData['type']})',
+          );
         } else if (ntData is String) {
           extractedName = ntData;
           _log('    nativeType from protocol: $extractedName (string)');
@@ -505,88 +453,19 @@ class VmServiceConnection {
 
         if (extractedName != null && extractedName != 'Never') {
           nativeType = extractedName;
-          typeSource = 'enriched protocol';
           _log('    ✓ Type resolved via enriched protocol: $nativeType');
         } else if (extractedName == 'Never') {
-          _log('    nativeType is "Never" (FFI type erasure — '
-              'compiler strips Pointer<T> → Pointer<Never>)');
-        }
-      }
-
-      // Strategy 1: TypeArgumentsRef name
-      if (nativeType == 'Unknown') {
-        final typeArgs = instance.typeArguments;
-        if (typeArgs != null && typeArgs.name != null) {
-          final typeArgsName = typeArgs.name!;
-          _log('    typeArguments.name: $typeArgsName');
-          final match = RegExp(r'<(\w+)>').firstMatch(typeArgsName);
-          if (match != null && match.group(1) != 'Never') {
-            nativeType = match.group(1)!;
-            typeSource = 'typeArguments';
-          }
-        }
-      }
-
-      // Strategy 2: runtimeType (often returns Pointer<Never> but try anyway)
-      if (nativeType == 'Unknown') {
-        try {
-          final rtResult = await _service!.evaluate(
-            _isolateId!,
-            instance.id!,
-            'runtimeType.toString()',
+          _log(
+            '    nativeType is "Never" (FFI type erasure — '
+            'compiler strips Pointer<T> → Pointer<Never>)',
           );
-          if (rtResult is InstanceRef && rtResult.valueAsString != null) {
-            final rtStr = rtResult.valueAsString!;
-            _log('    runtimeType: $rtStr');
-            final match = RegExp(r'Pointer<(\w+)>').firstMatch(rtStr);
-            if (match != null && match.group(1) != 'Never') {
-              nativeType = match.group(1)!;
-              typeSource = 'runtimeType';
-            }
-          }
-        } catch (_) {}
-      }
-
-      // Strategy 3: Source extraction via declaration position
-      if (nativeType == 'Unknown' && scriptId != null) {
-        try {
-          final script = await _service!.getObject(_isolateId!, scriptId) as Script;
-          final source = script.source;
-          if (source != null) {
-            final patterns = [
-              RegExp(r'Pointer<\s*([a-zA-Z0-9_<>]+)\s*>\s+' + RegExp.escape(varName)),
-              RegExp(RegExp.escape(varName) + r'\s*=\s*(?:[a-zA-Z0-9_\.]+)?(?:calloc|malloc)\s*<\s*([a-zA-Z0-9_<>]+)\s*>'),
-              RegExp(RegExp.escape(varName) + r'\s*=\s*[^;]+\.cast\s*<\s*([a-zA-Z0-9_<>]+)\s*>'),
-            ];
-            
-            for (final pattern in patterns) {
-              final match = pattern.firstMatch(source);
-              if (match != null) {
-                final extract = match.group(1) ?? match.group(2) ?? match.group(3);
-                if (extract != null && extract != 'Never') {
-                  nativeType = extract.trim();
-                  typeSource = 'source code';
-                  _log('    ✓ Type resolved via source: $nativeType');
-                  break;
-                }
-              }
-            }
-          }
-        } catch (e) {
-          _log('    ✗ Source extraction failed: $e');
         }
       }
-
-      // Strategy 4: Name-based heuristic (last resort)
       if (nativeType == 'Unknown') {
-        nativeType = _inferTypeByName(varName);
-        if (nativeType != 'Unknown') {
-          typeSource = 'name heuristic';
-          _log('    type inferred from name: $nativeType (heuristic)');
-        }
+        _log('    nativeType unresolved (no usable declaredType/nativeType)');
+      } else {
+        _log('    nativeType: $nativeType');
       }
-
-      _log('    nativeType: $nativeType (via $typeSource)');
 
       // ── Extract struct layout ──
       final layout = await _extractStructFields(nativeType);
@@ -594,10 +473,12 @@ class VmServiceConnection {
       final structSize = layout.totalSize > 0
           ? layout.totalSize
           : (rawFields.isNotEmpty
-              ? rawFields.last.offset + rawFields.last.size
-              : 0);
-      _log('    struct layout: ${rawFields.length} fields, '
-          'total size: $structSize bytes (sizeOf=${ layout.totalSize })');
+                ? rawFields.last.offset + rawFields.last.size
+                : 0);
+      _log(
+        '    struct layout: ${rawFields.length} fields, '
+        'total size: $structSize bytes (sizeOf=${layout.totalSize})',
+      );
 
       // ── Insert synthetic padding fields ──
       final fields = _insertPadding(rawFields, structSize);
@@ -611,7 +492,11 @@ class VmServiceConnection {
         address: address,
         structSize: structSize,
         fields: fields,
-        error: address == 0 ? 'null pointer (address 0)' : null,
+        error: address == 0
+            ? 'Address unavailable from VM protocol'
+            : (nativeType == 'Unknown'
+                  ? 'Type unavailable from VM metadata (declaredType/nativeType)'
+                  : null),
       );
     } catch (e) {
       _log('    extraction failed: $e');
@@ -639,14 +524,13 @@ class VmServiceConnection {
     // Try the custom SDK RPC
     if (_hasReadMemoryRpc) {
       try {
-        _log('  Calling _readNativeMemory(0x${address.toRadixString(16)}, $count)');
+        _log(
+          '  Calling _readNativeMemory(0x${address.toRadixString(16)}, $count)',
+        );
         final response = await _service!.callMethod(
           '_readNativeMemory',
           isolateId: _isolateId,
-          args: {
-            'address': address.toString(),
-            'count': count.toString(),
-          },
+          args: {'address': address.toString(), 'count': count.toString()},
         );
 
         final json = response.json;
@@ -665,40 +549,10 @@ class VmServiceConnection {
         }
       }
     }
-
-    // Fallback: Try to read memory via evaluate on the pointer
-    try {
-      _log('  Trying memory read via evaluate...');
-      // Use Dart FFI's Pointer.cast<Uint8>() to read bytes
-      // This requires the pointer to be in scope
-      return null;
-    } catch (_) {}
-
     return null;
   }
 
   // ─── Struct Field Extraction ────────────────────────────────────────
-
-  /// Cached root library ID for evaluate calls that need dart:ffi imports.
-  String? _rootLibraryId;
-
-  /// Get the root library ID (the user's library that imports dart:ffi).
-  Future<String?> _getRootLibraryId() async {
-    if (_rootLibraryId != null) return _rootLibraryId;
-    if (_service == null || _isolateId == null) return null;
-    try {
-      final isolate = await _service!.getIsolate(_isolateId!);
-      final rootLib = isolate.rootLib;
-      if (rootLib != null) {
-        _rootLibraryId = rootLib.id;
-        _log('    Root library: ${rootLib.uri}');
-        return _rootLibraryId;
-      }
-    } catch (e) {
-      _log('    Could not find root library: $e');
-    }
-    return null;
-  }
 
   /// Try to extract struct field metadata from the VM.
   ///
@@ -710,7 +564,8 @@ class VmServiceConnection {
   /// Strategy: get field NAMES from getters, TYPES from pragma/evaluate.
   /// Returns both the field list and the evaluated total size.
   Future<({List<StructField> fields, int totalSize})> _extractStructFields(
-      String typeName) async {
+    String typeName,
+  ) async {
     if (_service == null || _isolateId == null) {
       return (fields: <StructField>[], totalSize: 0);
     }
@@ -735,15 +590,15 @@ class VmServiceConnection {
           for (final classRef in lib.classes ?? <ClassRef>[]) {
             if (classRef.name == typeName) {
               _log('    Found class $typeName');
-              final cls = await _service!.getObject(
-                _isolateId!,
-                classRef.id!,
-              ) as Class;
+              final cls =
+                  await _service!.getObject(_isolateId!, classRef.id!) as Class;
 
               final result = await _extractFieldsFromStruct(cls);
               if (result.fields.isNotEmpty) {
-                _log('    ✓ Extracted ${result.fields.length} fields '
-                    'for $typeName (sizeOf=${result.totalSize})');
+                _log(
+                  '    ✓ Extracted ${result.fields.length} fields '
+                  'for $typeName (sizeOf=${result.totalSize})',
+                );
                 return result;
               }
 
@@ -776,15 +631,15 @@ class VmServiceConnection {
   ///    matching: if `name=` exists, `name` is a field
   /// 3. Evaluate #offsetOf and #sizeOf for ABI-correct layout
   /// 4. Get field types from Class.fields or size-based inference
-  Future<({List<StructField> fields, int totalSize})>
-      _extractFieldsFromStruct(Class cls) async {
+  Future<({List<StructField> fields, int totalSize})> _extractFieldsFromStruct(
+    Class cls,
+  ) async {
     final className = cls.name ?? '';
     final classJson = cls.json;
 
     // ── Scan all functions ──
     final allFuncNames = <String>[];
-    final offsetOfNames = <String>{};  // fields that have #offsetOf
-    final setterNames = <String>{};    // fields that have setters
+    final offsetOfNames = <String>{}; // fields that have #offsetOf
     final getterFuncIds = <String, String>{}; // field name → func ID
 
     final functions = classJson?['functions'] as List?;
@@ -800,15 +655,11 @@ class VmServiceConnection {
           // Detect #offsetOf entries: "id#offsetOf" → field "id"
           if (funcName.endsWith('#offsetOf')) {
             final fieldName = funcName.substring(
-                0, funcName.length - '#offsetOf'.length);
+              0,
+              funcName.length - '#offsetOf'.length,
+            );
             offsetOfNames.add(fieldName);
             _log('      #offsetOf → field: "$fieldName"');
-          }
-
-          // Detect setters: "id=" → field "id"
-          if (funcName.endsWith('=') && !funcName.startsWith('_')) {
-            final fieldName = funcName.substring(0, funcName.length - 1);
-            setterNames.add(fieldName);
           }
 
           // Track getter function IDs for return type lookup
@@ -826,12 +677,10 @@ class VmServiceConnection {
     }
 
     _log('    #offsetOf fields: $offsetOfNames');
-    _log('    setter fields: $setterNames');
 
     // ── Determine field names ──
     // Priority 1: #offsetOf entries (authoritative — FFI transformer signal)
     // Priority 2: Class.fields (for structs that keep field declarations)
-    // Priority 3: setter-matching (if name= exists, name is a field)
     List<String> fieldNames;
 
     if (offsetOfNames.isNotEmpty) {
@@ -839,10 +688,9 @@ class VmServiceConnection {
       fieldNames = offsetOfNames.toList();
       _log('    Using #offsetOf-based field list: $fieldNames');
     } else {
-      // Fallback: use Class.fields + setter matching
+      // Use Class.fields only (no heuristic setter matching).
       fieldNames = <String>[];
 
-      // From Class.fields
       for (final fieldRef in cls.fields ?? <FieldRef>[]) {
         final name = fieldRef.name ?? '';
         if (name.isEmpty) continue;
@@ -850,19 +698,7 @@ class VmServiceConnection {
         if (name.startsWith('#') || name.startsWith('_')) continue;
         if (!fieldNames.contains(name)) fieldNames.add(name);
       }
-
-      // From setter matching (filter by setter existence)
-      if (fieldNames.isEmpty) {
-        for (final setter in setterNames) {
-          if (!setter.contains('.') &&
-              !setter.contains('#') &&
-              allFuncNames.contains(setter)) {
-            if (!fieldNames.contains(setter)) fieldNames.add(setter);
-          }
-        }
-      }
-
-      _log('    Using fallback field list: $fieldNames');
+      _log('    Using Class.fields-based field list: $fieldNames');
     }
 
     // Log Class.fields for diagnosis
@@ -872,14 +708,15 @@ class VmServiceConnection {
       final typeName = fieldRef.declaredType?.name ?? '?';
       final isStatic = fieldRef.isStatic ?? false;
       final isConst = fieldRef.isConst ?? false;
-      _log('      "$name" type=$typeName '
-          'static=$isStatic const=$isConst');
+      _log(
+        '      "$name" type=$typeName '
+        'static=$isStatic const=$isConst',
+      );
     }
 
     if (fieldNames.isEmpty) {
       _log('    ✗ No fields found for $className');
       return (fields: <StructField>[], totalSize: 0);
-
     }
 
     // ── Get struct size via invoke on #sizeOf ──
@@ -901,7 +738,9 @@ class VmServiceConnection {
       for (final fieldName in fieldNames) {
         if (!offsetOfNames.contains(fieldName)) continue;
         final offset = await _invokeGetterValue(
-            classId, '${fieldName}#offsetOf');
+          classId,
+          '${fieldName}#offsetOf',
+        );
         if (offset >= 0) {
           evaluatedOffsets[fieldName] = offset;
           _log('    ${fieldName}#offsetOf = $offset');
@@ -910,8 +749,7 @@ class VmServiceConnection {
     }
 
     if (totalSize == 0) {
-      _log('    ⚠ Could not get struct size — '
-          'will use default type mapping');
+      _log('    #sizeOf unavailable; using computed size');
     }
 
     // ── Get field types from getter return types ──
@@ -930,8 +768,7 @@ class VmServiceConnection {
       final funcId = getterFuncIds[name];
       if (funcId != null) {
         try {
-          final func = await _service!.getObject(
-            _isolateId!, funcId) as Func;
+          final func = await _service!.getObject(_isolateId!, funcId) as Func;
           final sig = func.signature;
           final retType = sig?.returnType;
           if (retType != null && retType.name != null) {
@@ -946,63 +783,11 @@ class VmServiceConnection {
     }
     _log('    Field types: $fieldTypes');
 
-    // ── Build field layout with sizeOf reconciliation ──
-    // The Dart return types (int, double) are ambiguous w.r.t. FFI types:
-    //   int → Int8, Int16, Int32, Int64, Uint8, Uint16, Uint32, Uint64
-    //   double → Float, Double
-    // We use sizeOf<T>() to disambiguate by trying different type
-    // combinations and selecting the one that matches the total size.
-
-    // Build candidate type options for each field
-    final typeOptions = <List<({String typeName, int size})>>[];
-    for (final name in fieldNames) {
-      final rawType = fieldTypes[name] ?? 'Unknown';
-
-      // Generate candidate types for ambiguous Dart types
-      List<({String typeName, int size})> candidates;
-      if (rawType == 'int') {
-        candidates = [
-          (typeName: 'Int32', size: 4),
-          (typeName: 'Int64', size: 8),
-        ];
-      } else if (rawType == 'double') {
-        candidates = [
-          (typeName: 'Float', size: 4),
-          (typeName: 'Double', size: 8),
-        ];
-      } else {
-        final mapped = _mapToFfiType(rawType);
-        candidates = [mapped];
-      }
-
-      typeOptions.add(candidates);
-    }
-
-    // Try to find a type combination that matches sizeOf
-    List<StructField>? bestLayout;
-
-    if (totalSize > 0) {
-      bestLayout = _reconcileLayout(
-          fieldNames, typeOptions, totalSize, 0, []);
-    }
-
-    // If reconciliation found a match, use it
-    if (bestLayout != null) {
-      _log('    ✓ Reconciled layout with sizeOf=$totalSize');
-      for (final f in bestLayout) {
-        _log('      ${f.name}: ${f.typeName} '
-            'offset=${f.offset} size=${f.size}');
-      }
-      return (fields: bestLayout, totalSize: totalSize);
-    }
-
-    // Fallback: use default type mapping with evaluated offsets.
-    // When we have #offsetOf data, compute sizes from offset gaps
-    // instead of relying on default type sizes.
-    _log('    Using default type mapping (no sizeOf reconciliation)');
+    // ── Build field layout from VM metadata only ──
 
     // Check for union layout: all fields at offset 0
-    final isUnion = evaluatedOffsets.isNotEmpty &&
+    final isUnion =
+        evaluatedOffsets.isNotEmpty &&
         evaluatedOffsets.values.every((o) => o == 0);
     if (isUnion) {
       _log('    Detected union layout (all offsets = 0)');
@@ -1030,42 +815,9 @@ class VmServiceConnection {
         offset = computedOffset;
       }
 
-      // ── Refine size using offset gaps ──
-      // When we have #offsetOf data for consecutive fields, we can
-      // compute the exact field size from the gap between offsets.
-      // This handles packed structs, nested structs, and arrays correctly.
-      if (evaluatedOffsets.containsKey(name)) {
-        int inferredSize = size; // fallback to default
-
-        if (isUnion && totalSize > 0) {
-          // Union: each field fits within sizeOf
-          inferredSize = totalSize.clamp(0, size);
-        } else if (i + 1 < fieldNames.length &&
-            evaluatedOffsets.containsKey(fieldNames[i + 1])) {
-          // Size = next field's offset - this field's offset
-          inferredSize = evaluatedOffsets[fieldNames[i + 1]]! - offset;
-        } else if (totalSize > 0) {
-          // Last field: size = sizeOf - this offset
-          inferredSize = totalSize - offset;
-        }
-
-        if (inferredSize > 0 && inferredSize != size) {
-          // Look up the right type name for the inferred size
-          final corrected = _inferTypeFromSize(rawType, inferredSize,
-              _structClassNames);
-          typeName = corrected.typeName;
-          size = corrected.size;
-          _log('      $name: offset gap → size=$size (was ${mapped.size}), '
-              'type=$typeName');
-        }
-      }
-
-      fields.add(StructField(
-        name: name,
-        typeName: typeName,
-        offset: offset,
-        size: size,
-      ));
+      fields.add(
+        StructField(name: name, typeName: typeName, offset: offset, size: size),
+      );
 
       if (!isUnion) {
         computedOffset = offset + size;
@@ -1073,79 +825,32 @@ class VmServiceConnection {
     }
 
     if (totalSize > 0 && !isUnion && computedOffset != totalSize) {
-      _log('    ⚠ Size mismatch: computed=$computedOffset vs '
-          'sizeOf=$totalSize');
+      _log(
+        '    ⚠ Size mismatch: computed=$computedOffset vs '
+        'sizeOf=$totalSize',
+      );
     }
 
     // Use totalSize from sizeOf if available, else computed
-    final finalSize = totalSize > 0 ? totalSize : computedOffset;
-    _log('    ✓ Built layout: ${fields.length} fields, '
-        'totalSize=$finalSize');
+    final finalSize = totalSize > 0
+        ? totalSize
+        : (fields.isEmpty
+              ? 0
+              : fields
+                    .map((f) => f.offset + f.size)
+                    .reduce((a, b) => a > b ? a : b));
+    _log(
+      '    ✓ Built layout: ${fields.length} fields, '
+      'totalSize=$finalSize',
+    );
     for (final f in fields) {
-      _log('      ${f.name}: ${f.typeName} '
-          'offset=${f.offset} size=${f.size}');
+      _log(
+        '      ${f.name}: ${f.typeName} '
+        'offset=${f.offset} size=${f.size}',
+      );
     }
 
     return (fields: fields, totalSize: finalSize);
-  }
-
-  /// Recursively try type combinations to find one matching sizeOf.
-  ///
-  /// For each field, tries all candidate types (e.g., Int32 and Int64
-  /// for an `int` return type) and computes ABI-aligned offsets.
-  /// Returns the first combination whose total size matches [targetSize].
-  List<StructField>? _reconcileLayout(
-    List<String> fieldNames,
-    List<List<({String typeName, int size})>> typeOptions,
-    int targetSize,
-    int fieldIndex,
-    List<({String typeName, int size})> chosen,
-  ) {
-    if (fieldIndex == fieldNames.length) {
-      // All fields assigned — compute total with alignment and check
-      int offset = 0;
-      final fields = <StructField>[];
-      for (int i = 0; i < fieldNames.length; i++) {
-        final size = chosen[i].size;
-        // ABI alignment
-        if (size > 0 && offset % size != 0) {
-          offset = ((offset ~/ size) + 1) * size;
-        }
-        fields.add(StructField(
-          name: fieldNames[i],
-          typeName: chosen[i].typeName,
-          offset: offset,
-          size: size,
-        ));
-        offset += size;
-      }
-
-      // Check with struct end alignment (align total to max field size)
-      int maxAlign = 1;
-      for (final c in chosen) {
-        if (c.size > maxAlign) maxAlign = c.size;
-      }
-      if (offset % maxAlign != 0) {
-        offset = ((offset ~/ maxAlign) + 1) * maxAlign;
-      }
-
-      if (offset == targetSize) return fields;
-      return null;
-    }
-
-    // Try each candidate type for this field
-    for (final candidate in typeOptions[fieldIndex]) {
-      final result = _reconcileLayout(
-        fieldNames,
-        typeOptions,
-        targetSize,
-        fieldIndex + 1,
-        [...chosen, candidate],
-      );
-      if (result != null) return result;
-    }
-
-    return null;
   }
 
   /// Invoke a static getter on a class and extract its int value.
@@ -1164,7 +869,11 @@ class VmServiceConnection {
 
     try {
       final result = await _service!.invoke(
-        _isolateId!, targetId, getterName, []);
+        _isolateId!,
+        targetId,
+        getterName,
+        [],
+      );
 
       // Direct success (if VM ever supports getter invocation properly)
       if (result is InstanceRef && result.valueAsString != null) {
@@ -1180,8 +889,10 @@ class VmServiceConnection {
         return value;
       }
 
-      _log('    $getterName invoke: unexpected response: '
-          '${result.json?['type'] ?? result.runtimeType}');
+      _log(
+        '    $getterName invoke: unexpected response: '
+        '${result.json?['type'] ?? result.runtimeType}',
+      );
     } catch (e) {
       // The error might also be thrown as an exception
       final errorStr = e.toString();
@@ -1212,24 +923,12 @@ class VmServiceConnection {
 
   // ─── Type Mapping ───────────────────────────────────────────────────
 
-  /// Check if a type name is a recognized FFI type.
-  bool _isKnownFfiType(String typeName) {
-    const knownTypes = {
-      'Int8', 'Int16', 'Int32', 'Int64',
-      'Uint8', 'Uint16', 'Uint32', 'Uint64',
-      'Float', 'Double', 'Bool', 'Void',
-      'int', 'double', 'float', 'bool',
-    };
-    return knownTypes.contains(typeName) || typeName.startsWith('Pointer');
-  }
-
   /// Map a Dart/FFI/internal type name to its FFI type name and size.
   ({String typeName, int size}) _mapToFfiType(String rawType) {
     return switch (rawType) {
-      'int' || 'Int32' || 'Uint32' => (
-        typeName: rawType == 'int' ? 'Int32' : rawType,
-        size: 4
-      ),
+      'int' ||
+      'Int32' ||
+      'Uint32' => (typeName: rawType == 'int' ? 'Int32' : rawType, size: 4),
       'Int8' || 'Uint8' || 'Bool' => (typeName: rawType, size: 1),
       'Int16' || 'Uint16' => (typeName: rawType, size: 2),
       'Int64' || 'Uint64' => (typeName: rawType, size: 8),
@@ -1244,48 +943,12 @@ class VmServiceConnection {
     };
   }
 
-  /// Infer the correct FFI type from a Dart type and a known byte size.
-  ///
-  /// Used when #offsetOf gaps reveal the actual field size, which
-  /// may differ from the default mapping (e.g., int → Int32 by default,
-  /// but offset gap says 1 byte → must be Int8).
-  ({String typeName, int size}) _inferTypeFromSize(
-      String dartType, int size, List<String> structClassNames) {
-    // If this is a known struct class, it's a nested struct field
-    if (structClassNames.contains(dartType)) {
-      return (typeName: dartType, size: size);
-    }
-
-    // For ambiguous Dart types, pick the FFI type matching the size
-    if (dartType == 'int') {
-      return switch (size) {
-        1 => (typeName: 'Int8', size: 1),
-        2 => (typeName: 'Int16', size: 2),
-        4 => (typeName: 'Int32', size: 4),
-        8 => (typeName: 'Int64', size: 8),
-        _ => (typeName: 'Int32', size: size), // Keep discovered size
-      };
-    }
-    if (dartType == 'double') {
-      return switch (size) {
-        4 => (typeName: 'Float', size: 4),
-        8 => (typeName: 'Double', size: 8),
-        _ => (typeName: 'Double', size: size),
-      };
-    }
-
-    // For non-ambiguous types, just update the size
-    final mapped = _mapToFfiType(dartType);
-    return (typeName: mapped.typeName, size: size);
-  }
-
   /// Insert synthetic padding fields between struct fields where gaps exist.
   List<StructField> _insertPadding(List<StructField> fields, int totalSize) {
     if (fields.isEmpty || totalSize <= 0) return fields;
 
     // Skip for unions (all fields at offset 0)
-    final isUnion = fields.length >= 2 &&
-        fields.every((f) => f.offset == 0);
+    final isUnion = fields.length >= 2 && fields.every((f) => f.offset == 0);
     if (isUnion) return fields;
 
     final result = <StructField>[];
@@ -1294,13 +957,15 @@ class VmServiceConnection {
     for (final f in fields) {
       if (f.offset > cursor) {
         // Gap before this field — insert padding
-        result.add(StructField(
-          name: '[pad]',
-          typeName: '[pad]',
-          offset: cursor,
-          size: f.offset - cursor,
-          isPadding: true,
-        ));
+        result.add(
+          StructField(
+            name: '[pad]',
+            typeName: '[pad]',
+            offset: cursor,
+            size: f.offset - cursor,
+            isPadding: true,
+          ),
+        );
       }
       result.add(f);
       cursor = f.offset + f.size;
@@ -1308,13 +973,15 @@ class VmServiceConnection {
 
     // Trailing padding
     if (cursor < totalSize) {
-      result.add(StructField(
-        name: '[pad]',
-        typeName: '[pad]',
-        offset: cursor,
-        size: totalSize - cursor,
-        isPadding: true,
-      ));
+      result.add(
+        StructField(
+          name: '[pad]',
+          typeName: '[pad]',
+          offset: cursor,
+          size: totalSize - cursor,
+          isPadding: true,
+        ),
+      );
     }
 
     return result;
@@ -1336,12 +1003,14 @@ class VmServiceConnection {
             final count = f.size ~/ stride;
             final children = <StructField>[];
             for (int i = 0; i < count; i++) {
-              children.add(StructField(
-                name: '[$i]',
-                typeName: elemType,
-                offset: f.offset + i * stride,
-                size: stride,
-              ));
+              children.add(
+                StructField(
+                  name: '[$i]',
+                  typeName: elemType,
+                  offset: f.offset + i * stride,
+                  size: stride,
+                ),
+              );
             }
             _log('    ✓ Array ${f.name}: $count elements of $elemType');
             fields[idx] = StructField(
@@ -1371,8 +1040,10 @@ class VmServiceConnection {
                 children: child.children,
               );
             }).toList();
-            _log('    ✓ Nested struct ${f.name}: '
-                '${children.where((c) => !c.isPadding).length} fields');
+            _log(
+              '    ✓ Nested struct ${f.name}: '
+              '${children.where((c) => !c.isPadding).length} fields',
+            );
             fields[idx] = StructField(
               name: f.name,
               typeName: f.typeName,
@@ -1389,16 +1060,50 @@ class VmServiceConnection {
   }
 
   /// Creates a single-field layout for known primitive FFI types.
-  ({List<StructField> fields, int totalSize})? _primitiveLayout(String typeName) {
-    if (typeName == 'Pointer<Pointer>' || typeName.startsWith('Pointer<Pointer')) {
-      return (fields: [StructField(name: 'value', typeName: 'Pointer', offset: 0, size: 8)], totalSize: 8);
+  ({List<StructField> fields, int totalSize})? _primitiveLayout(
+    String typeName,
+  ) {
+    if (typeName == 'Pointer<Pointer>' ||
+        typeName.startsWith('Pointer<Pointer')) {
+      return (
+        fields: [
+          StructField(name: 'value', typeName: 'Pointer', offset: 0, size: 8),
+        ],
+        totalSize: 8,
+      );
     }
     final mapped = _mapToFfiType(typeName);
-    if (const {'Int8', 'Int16', 'Int32', 'Int64', 'Uint8', 'Uint16', 'Uint32', 'Uint64', 'Float', 'Double'}.contains(mapped.typeName)) {
-      return (fields: [StructField(name: 'value', typeName: mapped.typeName, offset: 0, size: mapped.size)], totalSize: mapped.size);
+    if (const {
+      'Int8',
+      'Int16',
+      'Int32',
+      'Int64',
+      'Uint8',
+      'Uint16',
+      'Uint32',
+      'Uint64',
+      'Float',
+      'Double',
+    }.contains(mapped.typeName)) {
+      return (
+        fields: [
+          StructField(
+            name: 'value',
+            typeName: mapped.typeName,
+            offset: 0,
+            size: mapped.size,
+          ),
+        ],
+        totalSize: mapped.size,
+      );
     }
     if (typeName.startsWith('Pointer<')) {
-      return (fields: [StructField(name: 'value', typeName: 'Pointer', offset: 0, size: 8)], totalSize: 8);
+      return (
+        fields: [
+          StructField(name: 'value', typeName: 'Pointer', offset: 0, size: 8),
+        ],
+        totalSize: 8,
+      );
     }
     return null;
   }

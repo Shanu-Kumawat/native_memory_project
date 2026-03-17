@@ -222,7 +222,7 @@ class _ObjectGraphState extends State<ObjectGraph> {
     final target = widget.allPointers[targetIdx];
     final edgeKey =
         '${parent.address}:${field.name}:${target.address.toRadixString(16)}';
-    final isExpanded = _expandedEdges.contains(edgeKey);
+    final isExpanded = depth == 0 || _expandedEdges.contains(edgeKey);
     final isCycle = visited.contains(target.address);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -233,15 +233,18 @@ class _ObjectGraphState extends State<ObjectGraph> {
             Text('.${field.name}', style: _fieldStyle),
             _arrow(),
             InkWell(
-              onTap: () {
-                setState(() {
-                  if (isExpanded) {
-                    _expandedEdges.remove(edgeKey);
-                  } else {
-                    _expandedEdges.add(edgeKey);
-                  }
-                });
-              },
+              // First level is always expanded by default.
+              onTap: depth == 0
+                  ? null
+                  : () {
+                      setState(() {
+                        if (isExpanded) {
+                          _expandedEdges.remove(edgeKey);
+                        } else {
+                          _expandedEdges.add(edgeKey);
+                        }
+                      });
+                    },
               borderRadius: BorderRadius.circular(3),
               child: Padding(
                 padding: const EdgeInsets.all(2),
@@ -256,9 +259,21 @@ class _ObjectGraphState extends State<ObjectGraph> {
             if (isCycle)
               _label('↻ cycle', InspectorTheme.warning)
             else
-              _label(
-                '${target.variableName} (${target.nativeType})',
-                InspectorTheme.textDim,
+              InkWell(
+                onTap: () {
+                  widget.onNavigate(targetIdx);
+                },
+                borderRadius: BorderRadius.circular(3),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 2,
+                    vertical: 1,
+                  ),
+                  child: _label(
+                    '${target.variableName} (${target.nativeType})',
+                    InspectorTheme.success,
+                  ),
+                ),
               ),
           ],
         ),

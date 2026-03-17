@@ -195,6 +195,8 @@ class _InspectorPageState extends State<InspectorPage> {
                           canLoadMore:
                               _vmConnection.hasReadMemoryRpc &&
                               _state.selectedPointer!.address != 0 &&
+                              _state.selectedPointer!.category ==
+                                  models.PointerCategory.raw &&
                               (_state.selectedPointer!.rawBytes?.length ?? 0) <
                                   4096,
                           onLoadMore: _loadMoreForSelectedPointer,

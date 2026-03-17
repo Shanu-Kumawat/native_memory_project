@@ -102,6 +102,16 @@ final class Buffer extends Struct {
   external Pointer<Uint8> data; // Points to a separate byte buffer
 }
 
+// Branching graph node with multiple pointer members.
+final class BiNode extends Struct {
+  @Int32()
+  external int id;
+
+  external Pointer<BiNode> left;
+  external Pointer<BiNode> right;
+  external Pointer<Uint8> payload;
+}
+
 // Opaque native handle type.
 final class NativeHandle extends Opaque {}
 
@@ -184,6 +194,46 @@ void main() {
   buffer.ref
     ..length = 8
     ..data = bufData;
+
+  // Multi-depth/multi-member branching graph.
+  final treeRoot = calloc<BiNode>();
+  final treeLeft = calloc<BiNode>();
+  final treeRight = calloc<BiNode>();
+  final treeLeftLeft = calloc<BiNode>();
+  final treeRightRight = calloc<BiNode>();
+  final treePayloadA = calloc<Uint8>(6);
+  final treePayloadB = calloc<Uint8>(6);
+  final treePayloadC = calloc<Uint8>(6);
+  for (int i = 0; i < 6; i++) {
+    treePayloadA[i] = 10 + i;
+    treePayloadB[i] = 20 + i;
+    treePayloadC[i] = 30 + i;
+  }
+  treeRoot.ref
+    ..id = 1
+    ..left = treeLeft
+    ..right = treeRight
+    ..payload = treePayloadA;
+  treeLeft.ref
+    ..id = 2
+    ..left = treeLeftLeft
+    ..right = nullptr
+    ..payload = treePayloadB;
+  treeRight.ref
+    ..id = 3
+    ..left = nullptr
+    ..right = treeRightRight
+    ..payload = treePayloadC;
+  treeLeftLeft.ref
+    ..id = 4
+    ..left = nullptr
+    ..right = nullptr
+    ..payload = treePayloadA;
+  treeRightRight.ref
+    ..id = 5
+    ..left = treeRoot // back-reference to root for cycle visibility
+    ..right = nullptr
+    ..payload = treePayloadB;
 
   // Pointer value with erased static type information on the variable.
   dynamic unknownPtr = rawBuf.cast<Void>();
@@ -280,6 +330,15 @@ void main() {
       '  data bytes: ${List.generate(8, (i) => buffer.ref.data[i]).join(', ')}');
   print('  sizeOf<Buffer>: ${sizeOf<Buffer>()} bytes');
   print('');
+  print('BiNode tree (branching + deep + cycle):');
+  print('  treeRoot @ 0x${treeRoot.address.toRadixString(16)}');
+  print('  root.left:  0x${treeRoot.ref.left.address.toRadixString(16)}');
+  print('  root.right: 0x${treeRoot.ref.right.address.toRadixString(16)}');
+  print('  right.right: 0x${treeRight.ref.right.address.toRadixString(16)}');
+  print('  right.right.left (cycle): '
+      '0x${treeRightRight.ref.left.address.toRadixString(16)}');
+  print('  sizeOf<BiNode>: ${sizeOf<BiNode>()} bytes');
+  print('');
   print(
       'unknownPtr (dynamic) @ 0x${(unknownPtr as Pointer).address.toRadixString(16)}');
   print('  declared as dynamic (value is Pointer<Void>)');
@@ -318,6 +377,14 @@ void main() {
   // Cleanup
   calloc.free(buffer);
   calloc.free(bufData);
+  calloc.free(treePayloadC);
+  calloc.free(treePayloadB);
+  calloc.free(treePayloadA);
+  calloc.free(treeRightRight);
+  calloc.free(treeLeftLeft);
+  calloc.free(treeRight);
+  calloc.free(treeLeft);
+  calloc.free(treeRoot);
   calloc.free(longRawBuf);
   calloc.free(rawBuf);
   calloc.free(ptrToPtr);

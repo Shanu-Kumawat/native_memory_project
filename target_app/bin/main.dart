@@ -102,6 +102,9 @@ final class Buffer extends Struct {
   external Pointer<Uint8> data; // Points to a separate byte buffer
 }
 
+// Opaque native handle type.
+final class NativeHandle extends Opaque {}
+
 void main() {
   print('=== Native Memory Inspection Target ===\n');
 
@@ -166,6 +169,12 @@ void main() {
     rawBuf[i] = 0xAA + i; // 0xAA, 0xAB, 0xAC, ...
   }
 
+  // Larger byte buffer to validate "load more" behavior.
+  final longRawBuf = calloc<Uint8>(256);
+  for (int i = 0; i < 256; i++) {
+    longRawBuf[i] = i;
+  }
+
   // Length + pointer buffer struct
   final bufData = calloc<Uint8>(8);
   for (int i = 0; i < 8; i++) {
@@ -176,12 +185,29 @@ void main() {
     ..length = 8
     ..data = bufData;
 
+  // Pointer value with erased static type information on the variable.
+  dynamic unknownPtr = rawBuf.cast<Void>();
+
+  // Opaque pointer with no struct layout metadata.
+  final handle = Pointer<NativeHandle>.fromAddress(rawBuf.address);
+
   // Tagged pointer — address | 1 to simulate runtime tag bits
   final tagTarget = calloc<Point>();
   tagTarget.ref
     ..x = 42.0
     ..y = 84.0;
   final taggedAddr = tagTarget.address | 1; // Low bit set as tag
+  final taggedPointPtr = Pointer<Point>.fromAddress(taggedAddr);
+
+  // Cycle for graph traversal testing.
+  final cycleA = calloc<Node>();
+  final cycleB = calloc<Node>();
+  cycleA.ref
+    ..data = 11
+    ..next = cycleB;
+  cycleB.ref
+    ..data = 22
+    ..next = cycleA;
 
   // Safety test pointer
   final invalidPtr = Pointer<MyStruct>.fromAddress(0xDEADBEEF);
@@ -229,7 +255,8 @@ void main() {
   print('── Advanced Patterns ──');
   print('WithArray @ 0x${withArray.address.toRadixString(16)}');
   print('  count: ${withArray.ref.count}');
-  print('  values: [${List.generate(4, (i) => withArray.ref.values[i]).join(', ')}]');
+  print(
+      '  values: [${List.generate(4, (i) => withArray.ref.values[i]).join(', ')}]');
   print('  sizeOf<WithArray>: ${sizeOf<WithArray>()} bytes');
   print('');
   print('ptrToPtr @ 0x${ptrToPtr.address.toRadixString(16)}');
@@ -237,18 +264,41 @@ void main() {
   print('  **ptrToPtr: ${ptrToPtr.value.value}');
   print('');
   print('rawBuf @ 0x${rawBuf.address.toRadixString(16)}');
-  print('  bytes: ${List.generate(16, (i) => '0x${rawBuf[i].toRadixString(16)}').join(', ')}');
+  print(
+      '  bytes: ${List.generate(16, (i) => '0x${rawBuf[i].toRadixString(16)}').join(', ')}');
+  print('');
+  print('longRawBuf @ 0x${longRawBuf.address.toRadixString(16)}');
+  print(
+      '  first 16 bytes: ${List.generate(16, (i) => longRawBuf[i]).join(', ')}');
+  print(
+      '  last 16 bytes: ${List.generate(16, (i) => longRawBuf[240 + i]).join(', ')}');
   print('');
   print('Buffer @ 0x${buffer.address.toRadixString(16)}');
   print('  length: ${buffer.ref.length}');
   print('  data: 0x${buffer.ref.data.address.toRadixString(16)}');
-  print('  data bytes: ${List.generate(8, (i) => buffer.ref.data[i]).join(', ')}');
+  print(
+      '  data bytes: ${List.generate(8, (i) => buffer.ref.data[i]).join(', ')}');
   print('  sizeOf<Buffer>: ${sizeOf<Buffer>()} bytes');
+  print('');
+  print(
+      'unknownPtr (dynamic) @ 0x${(unknownPtr as Pointer).address.toRadixString(16)}');
+  print('  declared as dynamic (value is Pointer<Void>)');
+  print('');
+  print(
+      'handle (Pointer<NativeHandle>) @ 0x${handle.address.toRadixString(16)}');
+  print('  opaque pointer, no struct fields');
   print('');
   print('Tagged pointer:');
   print('  tagTarget @ 0x${tagTarget.address.toRadixString(16)}');
   print('  taggedAddr = 0x${taggedAddr.toRadixString(16)} (address | 1)');
   print('  Untagged: 0x${(taggedAddr & ~1).toRadixString(16)}');
+  print('  taggedPointPtr @ 0x${taggedPointPtr.address.toRadixString(16)}');
+  print('');
+  print('Cycle nodes:');
+  print(
+      '  cycleA @ 0x${cycleA.address.toRadixString(16)} -> 0x${cycleA.ref.next.address.toRadixString(16)}');
+  print(
+      '  cycleB @ 0x${cycleB.address.toRadixString(16)} -> 0x${cycleB.ref.next.address.toRadixString(16)}');
   print('');
 
   print('── Safety Tests ──');
@@ -268,6 +318,7 @@ void main() {
   // Cleanup
   calloc.free(buffer);
   calloc.free(bufData);
+  calloc.free(longRawBuf);
   calloc.free(rawBuf);
   calloc.free(ptrToPtr);
   calloc.free(innerInt);
@@ -277,6 +328,8 @@ void main() {
   calloc.free(packedData);
   calloc.free(node2);
   calloc.free(node1);
+  calloc.free(cycleB);
+  calloc.free(cycleA);
   calloc.free(point);
   calloc.free(tagTarget);
   calloc.free(myStruct);

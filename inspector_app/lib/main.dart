@@ -42,8 +42,7 @@ class _InspectorPageState extends State<InspectorPage> {
   final _vmConnection = VmServiceConnection();
   var _state = const models.InspectorState();
 
-  void _updateState(
-      models.InspectorState Function(models.InspectorState) fn) {
+  void _updateState(models.InspectorState Function(models.InspectorState) fn) {
     setState(() => _state = fn(_state));
   }
 
@@ -89,10 +88,39 @@ class _InspectorPageState extends State<InspectorPage> {
 
   Future<void> _scanForPointers() async {
     final pointers = await _vmConnection.findPointers();
-    _updateState((s) => s.copyWith(
-      pointers: pointers,
-      selectedPointerIndex: pointers.isNotEmpty ? 0 : -1,
-    ));
+    _updateState(
+      (s) => s.copyWith(
+        pointers: pointers,
+        selectedPointerIndex: pointers.isNotEmpty ? 0 : -1,
+      ),
+    );
+  }
+
+  Future<void> _loadMoreForSelectedPointer() async {
+    final selectedIndex = _state.selectedPointerIndex;
+    if (selectedIndex < 0 || selectedIndex >= _state.pointers.length) return;
+    if (!_vmConnection.hasReadMemoryRpc) return;
+
+    final pointer = _state.pointers[selectedIndex];
+    if (pointer.address == 0) return;
+
+    final currentLength = pointer.rawBytes?.length ?? 0;
+    final nextLength = (currentLength + 64).clamp(64, 4096);
+    final bytes = await _vmConnection.readNativeMemory(
+      pointer.address,
+      nextLength,
+    );
+    if (bytes == null) return;
+
+    final updated = pointer.copyWith(
+      rawBytes: bytes,
+      structSize: pointer.structSize > bytes.length ? null : bytes.length,
+      error: null,
+    );
+
+    final pointers = List<models.PointerData>.from(_state.pointers);
+    pointers[selectedIndex] = updated;
+    _updateState((s) => s.copyWith(pointers: pointers));
   }
 
   void _selectPointer(int index) {
@@ -100,20 +128,19 @@ class _InspectorPageState extends State<InspectorPage> {
     if (_state.selectedPointerIndex >= 0) {
       history.add(_state.selectedPointerIndex);
     }
-    _updateState((s) => s.copyWith(
-      selectedPointerIndex: index,
-      navigationHistory: history,
-    ));
+    _updateState(
+      (s) =>
+          s.copyWith(selectedPointerIndex: index, navigationHistory: history),
+    );
   }
 
   void _navigateBack() {
     if (!_state.canGoBack) return;
     final history = List<int>.from(_state.navigationHistory);
     final prev = history.removeLast();
-    _updateState((s) => s.copyWith(
-      selectedPointerIndex: prev,
-      navigationHistory: history,
-    ));
+    _updateState(
+      (s) => s.copyWith(selectedPointerIndex: prev, navigationHistory: history),
+    );
   }
 
   @override
@@ -138,24 +165,23 @@ class _InspectorPageState extends State<InspectorPage> {
                     pointers: _state.pointers,
                     selectedIndex: _state.selectedPointerIndex,
                     onSelect: _selectPointer,
-                    isConnected: _state.connectionState ==
+                    isConnected:
+                        _state.connectionState ==
                         models.ConnectionState.connected,
                     onConnect: _connect,
                     onDisconnect: _disconnect,
                     onRescan: _scanForPointers,
-                    isConnecting: _state.connectionState ==
+                    isConnecting:
+                        _state.connectionState ==
                         models.ConnectionState.connecting,
-                    errorMessage: _state.connectionState ==
-                            models.ConnectionState.error
+                    errorMessage:
+                        _state.connectionState == models.ConnectionState.error
                         ? _state.errorMessage
                         : null,
                   ),
                 ),
                 // ─── Divider ───
-                Container(
-                  width: 1,
-                  color: InspectorTheme.border,
-                ),
+                Container(width: 1, color: InspectorTheme.border),
                 // ─── Detail panel ───
                 Expanded(
                   child: _state.selectedPointer != null
@@ -166,6 +192,12 @@ class _InspectorPageState extends State<InspectorPage> {
                           onNavigate: _selectPointer,
                           canGoBack: _state.canGoBack,
                           onGoBack: _navigateBack,
+                          canLoadMore:
+                              _vmConnection.hasReadMemoryRpc &&
+                              _state.selectedPointer!.address != 0 &&
+                              (_state.selectedPointer!.rawBytes?.length ?? 0) <
+                                  4096,
+                          onLoadMore: _loadMoreForSelectedPointer,
                         )
                       : _emptyState(),
                 ),
@@ -195,8 +227,11 @@ class _InspectorPageState extends State<InspectorPage> {
               color: InspectorTheme.accent.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(6),
             ),
-            child: const Icon(Icons.memory, size: 16,
-                color: InspectorTheme.accent),
+            child: const Icon(
+              Icons.memory,
+              size: 16,
+              color: InspectorTheme.accent,
+            ),
           ),
           const SizedBox(width: 10),
           Text(
@@ -228,7 +263,10 @@ class _InspectorPageState extends State<InspectorPage> {
           // Connection indicator
           _connectionDot(),
           const SizedBox(width: 6),
-          Text(_connectionLabel(), style: InspectorTheme.label.copyWith(fontSize: 10)),
+          Text(
+            _connectionLabel(),
+            style: InspectorTheme.label.copyWith(fontSize: 10),
+          ),
         ],
       ),
     );

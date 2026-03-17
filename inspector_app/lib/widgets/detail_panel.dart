@@ -21,6 +21,8 @@ class DetailPanel extends StatefulWidget {
     required this.onNavigate,
     this.canGoBack = false,
     this.onGoBack,
+    this.canLoadMore = false,
+    this.onLoadMore,
   });
 
   final PointerData pointer;
@@ -28,6 +30,8 @@ class DetailPanel extends StatefulWidget {
   final ValueChanged<int> onNavigate;
   final bool canGoBack;
   final VoidCallback? onGoBack;
+  final bool canLoadMore;
+  final VoidCallback? onLoadMore;
 
   @override
   State<DetailPanel> createState() => _DetailPanelState();
@@ -43,8 +47,7 @@ class _DetailPanelState extends State<DetailPanel> {
   }
 
   void _navigateToAddress(int address) {
-    final idx =
-        widget.allPointers.indexWhere((p) => p.address == address);
+    final idx = widget.allPointers.indexWhere((p) => p.address == address);
     if (idx >= 0) widget.onNavigate(idx);
   }
 
@@ -87,6 +90,8 @@ class _DetailPanelState extends State<DetailPanel> {
                     baseAddress: d.address,
                     selectionNotifier: _selectionNotifier,
                     fields: d.fields,
+                    hasMore: widget.canLoadMore,
+                    onLoadMore: widget.canLoadMore ? widget.onLoadMore : null,
                   ),
                 ],
                 // Object graph (for structs with nested structures)
@@ -126,8 +131,11 @@ class _DetailPanelState extends State<DetailPanel> {
               borderRadius: BorderRadius.circular(4),
               child: Container(
                 padding: const EdgeInsets.all(4),
-                child: const Icon(Icons.arrow_back,
-                    size: 16, color: InspectorTheme.textDim),
+                child: const Icon(
+                  Icons.arrow_back,
+                  size: 16,
+                  color: InspectorTheme.textDim,
+                ),
               ),
             ),
             const SizedBox(width: 8),
@@ -141,9 +149,13 @@ class _DetailPanelState extends State<DetailPanel> {
             ),
           ),
           const SizedBox(width: 8),
-          Text('→',
-              style: InspectorTheme.mono
-                  .copyWith(color: InspectorTheme.textDim, fontSize: 12)),
+          Text(
+            '→',
+            style: InspectorTheme.mono.copyWith(
+              color: InspectorTheme.textDim,
+              fontSize: 12,
+            ),
+          ),
           const SizedBox(width: 8),
           // Type badge
           Container(
@@ -152,12 +164,14 @@ class _DetailPanelState extends State<DetailPanel> {
               color: InspectorTheme.purple.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(4),
               border: Border.all(
-                  color: InspectorTheme.purple.withValues(alpha: 0.25)),
+                color: InspectorTheme.purple.withValues(alpha: 0.25),
+              ),
             ),
             child: Text(
               'Pointer<${d.nativeType}>',
-              style: InspectorTheme.monoSmall
-                  .copyWith(color: InspectorTheme.purple),
+              style: InspectorTheme.monoSmall.copyWith(
+                color: InspectorTheme.purple,
+              ),
             ),
           ),
           const SizedBox(width: 10),
@@ -171,8 +185,10 @@ class _DetailPanelState extends State<DetailPanel> {
               color: InspectorTheme.surfaceLight,
               borderRadius: BorderRadius.circular(4),
             ),
-            child: Text('${d.structSize}B',
-                style: InspectorTheme.monoSmall.copyWith(fontSize: 11)),
+            child: Text(
+              '${d.structSize}B',
+              style: InspectorTheme.monoSmall.copyWith(fontSize: 11),
+            ),
           ),
           const SizedBox(width: 8),
           // Field count
@@ -183,8 +199,9 @@ class _DetailPanelState extends State<DetailPanel> {
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
-                '${d.fields.where((f) => !f.isPadding).length} fields',
-                style: InspectorTheme.monoSmall.copyWith(fontSize: 11)),
+              '${d.fields.where((f) => !f.isPadding).length} fields',
+              style: InspectorTheme.monoSmall.copyWith(fontSize: 11),
+            ),
           ),
         ],
       ),
@@ -200,16 +217,24 @@ class _DetailPanelState extends State<DetailPanel> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.warning_amber_rounded,
-                    size: 36,
-                    color: InspectorTheme.error.withValues(alpha: 0.5)),
+                Icon(
+                  Icons.warning_amber_rounded,
+                  size: 36,
+                  color: InspectorTheme.error.withValues(alpha: 0.5),
+                ),
                 const SizedBox(height: 12),
-                Text(d.error ?? 'Unknown error',
-                    style: InspectorTheme.mono
-                        .copyWith(color: InspectorTheme.error, fontSize: 13)),
+                Text(
+                  d.error ?? 'Unknown error',
+                  style: InspectorTheme.mono.copyWith(
+                    color: InspectorTheme.error,
+                    fontSize: 13,
+                  ),
+                ),
                 const SizedBox(height: 6),
-                Text('Address: ${d.addressHex}',
-                    style: InspectorTheme.monoSmall),
+                Text(
+                  'Address: ${d.addressHex}',
+                  style: InspectorTheme.monoSmall,
+                ),
               ],
             ),
           ),

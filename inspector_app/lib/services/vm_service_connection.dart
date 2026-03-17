@@ -341,6 +341,8 @@ class VmServiceConnection {
             // Always surface read failures for this pointer.
             pointers[i] = p.copyWith(
               error: 'Memory read failed: address may be invalid or unmapped',
+              fields: const [],
+              structSize: 0,
             );
             _log('  ✗ Memory read failed or unavailable');
           }

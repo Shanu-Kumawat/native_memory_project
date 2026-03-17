@@ -37,9 +37,17 @@ class StructField {
       !_primitiveTypes.contains(typeName);
 
   static const _primitiveTypes = {
-    'Int8', 'Int16', 'Int32', 'Int64',
-    'Uint8', 'Uint16', 'Uint32', 'Uint64',
-    'Float', 'Double', 'Bool',
+    'Int8',
+    'Int16',
+    'Int32',
+    'Int64',
+    'Uint8',
+    'Uint16',
+    'Uint32',
+    'Uint64',
+    'Float',
+    'Double',
+    'Bool',
   };
 }
 
@@ -80,12 +88,21 @@ class PointerData {
     if (hasError || (nativeType == 'Unknown' && !hasRawBytes)) {
       return PointerCategory.error;
     }
-    if (nativeType == 'Unknown') return PointerCategory.raw;
+    final isBytePointer = nativeType == 'Uint8' || nativeType == 'Int8';
+    final isOpaqueLike =
+        nativeType == 'Void' ||
+        nativeType.contains('Opaque') ||
+        nativeType.contains('Handle');
+    if (nativeType == 'Unknown' ||
+        isBytePointer ||
+        isOpaqueLike ||
+        (!hasFields && hasRawBytes)) {
+      return PointerCategory.raw;
+    }
 
     // Detect union: multiple non-padding fields all at offset 0
     final realFields = fields.where((f) => !f.isPadding).toList();
-    if (realFields.length >= 2 &&
-        realFields.every((f) => f.offset == 0)) {
+    if (realFields.length >= 2 && realFields.every((f) => f.offset == 0)) {
       return PointerCategory.union;
     }
 
@@ -119,12 +136,7 @@ class PointerData {
 }
 
 /// Connection state for the VM Service.
-enum ConnectionState {
-  disconnected,
-  connecting,
-  connected,
-  error,
-}
+enum ConnectionState { disconnected, connecting, connected, error }
 
 /// Overall state of the inspector.
 class InspectorState {
@@ -150,8 +162,8 @@ class InspectorState {
 
   PointerData? get selectedPointer =>
       selectedPointerIndex >= 0 && selectedPointerIndex < pointers.length
-          ? pointers[selectedPointerIndex]
-          : null;
+      ? pointers[selectedPointerIndex]
+      : null;
 
   bool get canGoBack => navigationHistory.isNotEmpty;
 
@@ -178,8 +190,7 @@ class InspectorState {
       errorMessage: errorMessage,
       vmName: vmName ?? this.vmName,
       vmVersion: vmVersion ?? this.vmVersion,
-      selectedPointerIndex:
-          selectedPointerIndex ?? this.selectedPointerIndex,
+      selectedPointerIndex: selectedPointerIndex ?? this.selectedPointerIndex,
       navigationHistory: navigationHistory ?? this.navigationHistory,
     );
   }

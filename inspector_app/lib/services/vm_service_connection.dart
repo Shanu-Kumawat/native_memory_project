@@ -324,27 +324,24 @@ class VmServiceConnection {
       for (int i = 0; i < pointers.length; i++) {
         final p = pointers[i];
         if (p.address != 0) {
-          // Read structSize bytes if known, otherwise 64 bytes for untyped pointers
-          final readSize = p.structSize > 0 ? p.structSize : 64;
+          final readSize = _preferredReadSize(p);
           _log(
             'Reading $readSize bytes at 0x${p.address.toRadixString(16)} '
             'for ${p.variableName}...',
           );
           final bytes = await readNativeMemory(p.address, readSize);
           if (bytes != null) {
-            // For unknown pointers, update structSize to bytes read
             pointers[i] = p.copyWith(
               rawBytes: bytes,
               structSize: p.structSize > 0 ? null : bytes.length,
+              error: null,
             );
             _log('  ✓ Read ${bytes.length} bytes successfully');
           } else {
-            // Memory read failed — set error so UI shows it
-            if (p.nativeType == 'Unknown') {
-              pointers[i] = p.copyWith(
-                error: 'Memory read failed: address may be invalid or unmapped',
-              );
-            }
+            // Always surface read failures for this pointer.
+            pointers[i] = p.copyWith(
+              error: 'Memory read failed: address may be invalid or unmapped',
+            );
             _log('  ✗ Memory read failed or unavailable');
           }
         }
@@ -360,6 +357,15 @@ class VmServiceConnection {
 
     _log('═══ Found ${pointers.length} pointers total ═══');
     return pointers;
+  }
+
+  int _preferredReadSize(PointerData pointer) {
+    if (pointer.structSize <= 0) return 64;
+    // Byte pointers are often buffers; show a practical preview window.
+    if (pointer.nativeType == 'Uint8' || pointer.nativeType == 'Int8') {
+      return 64;
+    }
+    return pointer.structSize;
   }
 
   // ─── Pointer Extraction ─────────────────────────────────────────────
@@ -817,6 +823,7 @@ class VmServiceConnection {
 
       // Refine size/type using authoritative VM layout metadata.
       int? knownSize;
+      final isLastField = i == fieldNames.length - 1;
       if (evaluatedOffsets.containsKey(name)) {
         if (isUnion && totalSize > 0) {
           knownSize = totalSize;
@@ -828,7 +835,12 @@ class VmServiceConnection {
         }
       }
       if (knownSize != null && knownSize > 0) {
-        final refined = _refineMappedTypeWithSize(rawType, mapped, knownSize);
+        final refined = _refineMappedTypeWithSize(
+          rawType,
+          mapped,
+          knownSize,
+          isLastField: isLastField,
+        );
         typeName = refined.typeName;
         size = refined.size;
       }
@@ -965,14 +977,19 @@ class VmServiceConnection {
   ({String typeName, int size}) _refineMappedTypeWithSize(
     String rawType,
     ({String typeName, int size}) mapped,
-    int knownSize,
-  ) {
+    int knownSize, {
+    required bool isLastField,
+  }) {
     if (rawType == 'int') {
       return switch (knownSize) {
         1 => (typeName: 'Int8', size: 1),
         2 => (typeName: 'Int16', size: 2),
         4 => (typeName: 'Int32', size: 4),
-        8 => (typeName: 'Int64', size: 8),
+        // For non-last fields, an 8-byte gap can be Int32 + padding.
+        8 => (
+          typeName: isLastField ? 'Int64' : 'Int32',
+          size: isLastField ? 8 : 4,
+        ),
         _ => (typeName: mapped.typeName, size: knownSize),
       };
     }

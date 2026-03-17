@@ -25,6 +25,7 @@ class ObjectGraph extends StatefulWidget {
 
 class _ObjectGraphState extends State<ObjectGraph> {
   bool _expanded = false;
+  final Set<String> _expandedEdges = <String>{};
 
   @override
   Widget build(BuildContext context) {
@@ -44,8 +45,7 @@ class _ObjectGraphState extends State<ObjectGraph> {
           InkWell(
             onTap: () => setState(() => _expanded = !_expanded),
             child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
                 children: [
                   Icon(
@@ -54,11 +54,16 @@ class _ObjectGraphState extends State<ObjectGraph> {
                     color: InspectorTheme.textDim,
                   ),
                   const SizedBox(width: 4),
-                  Icon(Icons.account_tree_outlined,
-                      size: 13, color: InspectorTheme.textDim),
+                  Icon(
+                    Icons.account_tree_outlined,
+                    size: 13,
+                    color: InspectorTheme.textDim,
+                  ),
                   const SizedBox(width: 6),
-                  Text('Structure Map',
-                      style: InspectorTheme.label.copyWith(fontSize: 11)),
+                  Text(
+                    'Structure Map',
+                    style: InspectorTheme.label.copyWith(fontSize: 11),
+                  ),
                 ],
               ),
             ),
@@ -85,7 +90,9 @@ class _ObjectGraphState extends State<ObjectGraph> {
 
     if (visited.contains(pointer.address)) {
       return _label(
-          '↻ cycle → ${pointer.variableName}', InspectorTheme.warning);
+        '↻ cycle → ${pointer.variableName}',
+        InspectorTheme.warning,
+      );
     }
     visited.add(pointer.address);
 
@@ -121,18 +128,20 @@ class _ObjectGraphState extends State<ObjectGraph> {
           Text('.${field.name}', style: _fieldStyle),
           _arrow(),
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(
               color: InspectorTheme.arrayType.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(3),
               border: Border.all(
-                  color: InspectorTheme.arrayType.withValues(alpha: 0.25)),
+                color: InspectorTheme.arrayType.withValues(alpha: 0.25),
+              ),
             ),
             child: Text(
               '${field.typeName} (${field.size}B)',
-              style: InspectorTheme.monoSmall
-                  .copyWith(color: InspectorTheme.arrayType, fontSize: 10),
+              style: InspectorTheme.monoSmall.copyWith(
+                color: InspectorTheme.arrayType,
+                fontSize: 10,
+              ),
             ),
           ),
         ],
@@ -147,18 +156,20 @@ class _ObjectGraphState extends State<ObjectGraph> {
           Text('.${field.name}', style: _fieldStyle),
           _arrow(),
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(
               color: InspectorTheme.structType.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(3),
               border: Border.all(
-                  color: InspectorTheme.structType.withValues(alpha: 0.25)),
+                color: InspectorTheme.structType.withValues(alpha: 0.25),
+              ),
             ),
             child: Text(
               '${field.typeName} (${field.size}B)',
-              style: InspectorTheme.monoSmall
-                  .copyWith(color: InspectorTheme.structType, fontSize: 10),
+              style: InspectorTheme.monoSmall.copyWith(
+                color: InspectorTheme.structType,
+                fontSize: 10,
+              ),
             ),
           ),
         ],
@@ -190,8 +201,9 @@ class _ObjectGraphState extends State<ObjectGraph> {
       );
     }
 
-    final targetIdx =
-        widget.allPointers.indexWhere((p) => p.address == targetAddress);
+    final targetIdx = widget.allPointers.indexWhere(
+      (p) => p.address == targetAddress,
+    );
 
     if (targetIdx < 0) {
       return Row(
@@ -208,6 +220,10 @@ class _ObjectGraphState extends State<ObjectGraph> {
     }
 
     final target = widget.allPointers[targetIdx];
+    final edgeKey =
+        '${parent.address}:${field.name}:${target.address.toRadixString(16)}';
+    final isExpanded = _expandedEdges.contains(edgeKey);
+    final isCycle = visited.contains(target.address);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -216,19 +232,47 @@ class _ObjectGraphState extends State<ObjectGraph> {
             _connector(),
             Text('.${field.name}', style: _fieldStyle),
             _arrow(),
+            InkWell(
+              onTap: () {
+                setState(() {
+                  if (isExpanded) {
+                    _expandedEdges.remove(edgeKey);
+                  } else {
+                    _expandedEdges.add(edgeKey);
+                  }
+                });
+              },
+              borderRadius: BorderRadius.circular(3),
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: Icon(
+                  isExpanded ? Icons.expand_more : Icons.chevron_right,
+                  size: 13,
+                  color: InspectorTheme.textDim,
+                ),
+              ),
+            ),
+            const SizedBox(width: 2),
+            if (isCycle)
+              _label('↻ cycle', InspectorTheme.warning)
+            else
+              _label(
+                '${target.variableName} (${target.nativeType})',
+                InspectorTheme.textDim,
+              ),
           ],
         ),
-        Padding(
-          padding: const EdgeInsets.only(left: 20),
-          child: _buildNode(target, Set.of(visited), depth + 1),
-        ),
+        if (isExpanded && !isCycle)
+          Padding(
+            padding: const EdgeInsets.only(left: 20),
+            child: _buildNode(target, Set.of(visited), depth + 1),
+          ),
       ],
     );
   }
 
   Widget _nodeWidget(PointerData p) {
-    final idx =
-        widget.allPointers.indexWhere((x) => x.address == p.address);
+    final idx = widget.allPointers.indexWhere((x) => x.address == p.address);
 
     return InkWell(
       onTap: idx >= 0 ? () => widget.onNavigate(idx) : null,
@@ -247,18 +291,21 @@ class _ObjectGraphState extends State<ObjectGraph> {
             Text(
               p.variableName,
               style: InspectorTheme.monoSmall.copyWith(
-                  color: InspectorTheme.accent, fontSize: 12),
+                color: InspectorTheme.accent,
+                fontSize: 12,
+              ),
             ),
             const SizedBox(width: 6),
             Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
               decoration: BoxDecoration(
                 color: InspectorTheme.background,
                 borderRadius: BorderRadius.circular(3),
               ),
-              child: Text(p.nativeType,
-                  style: InspectorTheme.monoSmall.copyWith(fontSize: 10)),
+              child: Text(
+                p.nativeType,
+                style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
+              ),
             ),
             if (p.hasFields) ...[
               const SizedBox(width: 6),
@@ -274,33 +321,36 @@ class _ObjectGraphState extends State<ObjectGraph> {
   }
 
   String _fieldSummary(PointerData p) {
-    final nonPtrFields =
-        p.fields.where((f) => !f.isPointer && !f.isPadding).take(2);
+    final nonPtrFields = p.fields
+        .where((f) => !f.isPointer && !f.isPadding)
+        .take(2);
     if (nonPtrFields.isEmpty) return '';
     return '[${nonPtrFields.map((f) => f.name).join(', ')}]';
   }
 
   Widget _connector() => Padding(
-        padding: const EdgeInsets.only(right: 4),
-        child: Text('├─', style: _connStyle),
-      );
+    padding: const EdgeInsets.only(right: 4),
+    child: Text('├─', style: _connStyle),
+  );
 
   Widget _arrow() => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        child: Text('──→', style: _connStyle),
-      );
+    padding: const EdgeInsets.symmetric(horizontal: 4),
+    child: Text('──→', style: _connStyle),
+  );
 
   Widget _label(String text, Color color) => Text(
-        text,
-        style: InspectorTheme.monoSmall.copyWith(
-          color: color,
-          fontSize: 11,
-          fontStyle: FontStyle.italic,
-        ),
-      );
+    text,
+    style: InspectorTheme.monoSmall.copyWith(
+      color: color,
+      fontSize: 11,
+      fontStyle: FontStyle.italic,
+    ),
+  );
 
-  static final _fieldStyle = InspectorTheme.monoSmall
-      .copyWith(color: InspectorTheme.accent, fontSize: 11);
+  static final _fieldStyle = InspectorTheme.monoSmall.copyWith(
+    color: InspectorTheme.accent,
+    fontSize: 11,
+  );
 
   static final _connStyle = InspectorTheme.monoSmall.copyWith(
     color: InspectorTheme.border,

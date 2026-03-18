@@ -6,6 +6,7 @@
 /// - _readNativeMemory RPC for safe native memory reads
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:vm_service/vm_service.dart';
@@ -644,9 +645,15 @@ class VmServiceConnection {
         );
 
         final json = response.json;
+        if (json != null && json['bytes'] is String) {
+          final encoded = json['bytes'] as String;
+          final decoded = base64.decode(encoded);
+          _log('  _readNativeMemory returned ${decoded.length} bytes (base64)');
+          return Uint8List.fromList(decoded);
+        }
         if (json != null && json['bytes'] is List) {
           final byteList = (json['bytes'] as List).cast<int>();
-          _log('  _readNativeMemory returned ${byteList.length} bytes');
+          _log('  _readNativeMemory returned ${byteList.length} bytes (array)');
           return Uint8List.fromList(byteList);
         }
       } catch (e) {

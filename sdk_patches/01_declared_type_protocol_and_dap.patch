@@ -106,16 +106,3 @@ index 10677dc3154..1e1894a5083 100644
        'scopeStartTokenPos: $scopeStartTokenPos, scopeEndTokenPos: $scopeEndTokenPos]';
  }
  
-diff --git a/runtime/vm/service.h b/runtime/vm/service.h
-index 42a85d132cf..c7716db6fcc 100644
---- a/runtime/vm/service.h
-+++ b/runtime/vm/service.h
-@@ -19,7 +19,7 @@
- namespace dart {
- 
- #define SERVICE_PROTOCOL_MAJOR_VERSION 4
--#define SERVICE_PROTOCOL_MINOR_VERSION 20
-+#define SERVICE_PROTOCOL_MINOR_VERSION 21
- 
- class Array;
- class EmbedderServiceHandler;

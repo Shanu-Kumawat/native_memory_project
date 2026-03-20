@@ -100,6 +100,7 @@ class _DetailPanelState extends State<DetailPanel> {
                     rootPointer: d,
                     allPointers: widget.allPointers,
                     onNavigate: widget.onNavigate,
+                    selectionNotifier: _selectionNotifier,
                   ),
               ],
             ),

@@ -3,8 +3,10 @@
 // Supports branching, cycle detection, lazy expansion, clickable nodes.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/pointer_data.dart';
+import '../models/selection_notifier.dart';
 import '../theme.dart';
 
 class ObjectGraph extends StatefulWidget {
@@ -13,11 +15,13 @@ class ObjectGraph extends StatefulWidget {
     required this.rootPointer,
     required this.allPointers,
     required this.onNavigate,
+    this.selectionNotifier,
   });
 
   final PointerData rootPointer;
   final List<PointerData> allPointers;
   final ValueChanged<int> onNavigate;
+  final SelectionNotifier? selectionNotifier;
 
   @override
   State<ObjectGraph> createState() => _ObjectGraphState();
@@ -26,6 +30,61 @@ class ObjectGraph extends StatefulWidget {
 class _ObjectGraphState extends State<ObjectGraph> {
   bool _expanded = false;
   final Set<String> _expandedEdges = <String>{};
+
+  void _expandAll() {
+    setState(() {
+      _expandedEdges.clear();
+      _traverseToExpand(widget.rootPointer, <int>{}, 0);
+    });
+  }
+
+  void _collapseAll() {
+    setState(() {
+      _expandedEdges.clear();
+    });
+  }
+
+  void _traverseToExpand(PointerData p, Set<int> visited, int depth) {
+    if (depth > 6 || visited.contains(p.address)) return;
+    visited.add(p.address);
+
+    final interestingFields = p.fields
+        .where((f) => f.isPointer || f.isStruct || f.isArray)
+        .toList();
+
+    for (final field in interestingFields) {
+      if (!field.isPointer) continue;
+      int? targetAddress = _resolveTargetAddress(p, field);
+      if (targetAddress == null || targetAddress == 0) continue;
+
+      final targetIdx = widget.allPointers.indexWhere(
+        (x) => x.address == targetAddress,
+      );
+      if (targetIdx >= 0) {
+        final target = widget.allPointers[targetIdx];
+        final edgeKey =
+            '${p.address}:${field.name}:${target.address.toRadixString(16)}';
+        _expandedEdges.add(edgeKey);
+        _traverseToExpand(target, Set.of(visited), depth + 1);
+      }
+    }
+  }
+
+  int? _resolveTargetAddress(PointerData parent, StructField field) {
+    if (parent.hasRawBytes &&
+        field.offset + field.size <= parent.rawBytes!.length) {
+      final bytes = parent.rawBytes!.sublist(
+        field.offset,
+        field.offset + field.size,
+      );
+      int targetAddress = 0;
+      for (int i = bytes.length - 1; i >= 0; i--) {
+        targetAddress = (targetAddress << 8) | bytes[i];
+      }
+      return targetAddress;
+    }
+    return null;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -64,6 +123,46 @@ class _ObjectGraphState extends State<ObjectGraph> {
                     'Structure Map',
                     style: InspectorTheme.label.copyWith(fontSize: 11),
                   ),
+                  const Spacer(),
+                  if (_expanded) ...[
+                    TextButton(
+                      onPressed: _expandAll,
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(
+                        'Expand All',
+                        style: InspectorTheme.monoSmall.copyWith(
+                          color: InspectorTheme.accent,
+                          fontSize: 10,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(
+                      onPressed: _collapseAll,
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(
+                        'Collapse All',
+                        style: InspectorTheme.monoSmall.copyWith(
+                          color: InspectorTheme.textDim,
+                          fontSize: 10,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -89,9 +188,19 @@ class _ObjectGraphState extends State<ObjectGraph> {
     }
 
     if (visited.contains(pointer.address)) {
-      return _label(
-        '↻ cycle → ${pointer.variableName}',
-        InspectorTheme.warning,
+      return Padding(
+        padding: const EdgeInsets.only(top: 4, bottom: 4),
+        child: Row(
+          children: [
+            const SizedBox(width: 4),
+            Icon(Icons.loop, size: 14, color: InspectorTheme.warning),
+            const SizedBox(width: 4),
+            _label(
+              ' Cycle detected → ${pointer.variableName}',
+              InspectorTheme.warning,
+            ),
+          ],
+        ),
       );
     }
     visited.add(pointer.address);
@@ -104,11 +213,33 @@ class _ObjectGraphState extends State<ObjectGraph> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _nodeWidget(pointer),
-        for (final field in interestingFields)
-          Padding(
-            padding: const EdgeInsets.only(left: 20),
-            child: _buildEdge(field, pointer, visited, depth),
+        if (depth == 0) _nodeWidget(pointer),
+        if (interestingFields.isNotEmpty)
+          Container(
+            margin: EdgeInsets.only(
+              left: depth == 0 ? 12 : 46,
+              top: 4,
+              bottom: 4,
+            ),
+            padding: const EdgeInsets.only(left: 0, top: 4, bottom: 0),
+            decoration: BoxDecoration(
+              border: Border(
+                left: BorderSide(
+                  color: InspectorTheme.border.withValues(alpha: 0.5),
+                  width: 1.5,
+                ),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final field in interestingFields)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: _buildEdge(field, pointer, visited, depth),
+                  ),
+              ],
+            ),
           ),
       ],
     );
@@ -125,13 +256,13 @@ class _ObjectGraphState extends State<ObjectGraph> {
       return Row(
         children: [
           _connector(),
-          Text('.${field.name}', style: _fieldStyle),
+          Text(field.name, style: _fieldStyle),
           _arrow(),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(
               color: InspectorTheme.arrayType.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(3),
+              borderRadius: BorderRadius.circular(4),
               border: Border.all(
                 color: InspectorTheme.arrayType.withValues(alpha: 0.25),
               ),
@@ -140,7 +271,7 @@ class _ObjectGraphState extends State<ObjectGraph> {
               '${field.typeName} (${field.size}B)',
               style: InspectorTheme.monoSmall.copyWith(
                 color: InspectorTheme.arrayType,
-                fontSize: 10,
+                fontSize: 11,
               ),
             ),
           ),
@@ -153,13 +284,13 @@ class _ObjectGraphState extends State<ObjectGraph> {
       return Row(
         children: [
           _connector(),
-          Text('.${field.name}', style: _fieldStyle),
+          Text(field.name, style: _fieldStyle),
           _arrow(),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
             decoration: BoxDecoration(
               color: InspectorTheme.structType.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(3),
+              borderRadius: BorderRadius.circular(4),
               border: Border.all(
                 color: InspectorTheme.structType.withValues(alpha: 0.25),
               ),
@@ -168,7 +299,7 @@ class _ObjectGraphState extends State<ObjectGraph> {
               '${field.typeName} (${field.size}B)',
               style: InspectorTheme.monoSmall.copyWith(
                 color: InspectorTheme.structType,
-                fontSize: 10,
+                fontSize: 11,
               ),
             ),
           ),
@@ -177,26 +308,30 @@ class _ObjectGraphState extends State<ObjectGraph> {
     }
 
     // Pointer fields — try to resolve target
-    int? targetAddress;
-    if (parent.hasRawBytes &&
-        field.offset + field.size <= parent.rawBytes!.length) {
-      final bytes = parent.rawBytes!.sublist(
-        field.offset,
-        field.offset + field.size,
+    int? targetAddress = _resolveTargetAddress(parent, field);
+
+    final isRoot = parent.address == widget.rootPointer.address;
+
+    Widget wrapHover(Widget child) {
+      if (!isRoot || widget.selectionNotifier == null) return child;
+      return MouseRegion(
+        onEnter: (_) => widget.selectionNotifier!.hover(
+          field.offset,
+          field.size,
+          InspectorTheme.accent.withValues(alpha: 0.3),
+        ),
+        onExit: (_) => widget.selectionNotifier!.clearHover(),
+        child: child,
       );
-      targetAddress = 0;
-      for (int i = bytes.length - 1; i >= 0; i--) {
-        targetAddress = (targetAddress! << 8) | bytes[i];
-      }
     }
 
     if (targetAddress == null || targetAddress == 0) {
       return Row(
         children: [
           _connector(),
-          Text('.${field.name}', style: _fieldStyle),
+          Text(field.name, style: _fieldStyle),
           _arrow(),
-          _label('null', InspectorTheme.textDim),
+          _label('null', InspectorTheme.textDim.withValues(alpha: 0.6)),
         ],
       );
     }
@@ -209,7 +344,7 @@ class _ObjectGraphState extends State<ObjectGraph> {
       return Row(
         children: [
           _connector(),
-          Text('.${field.name}', style: _fieldStyle),
+          Text(field.name, style: _fieldStyle),
           _arrow(),
           _label(
             '0x${targetAddress.toRadixString(16)} (not scanned)',
@@ -227,59 +362,118 @@ class _ObjectGraphState extends State<ObjectGraph> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            _connector(),
-            Text('.${field.name}', style: _fieldStyle),
-            _arrow(),
-            InkWell(
-              // First level is always expanded by default.
-              onTap: depth == 0
-                  ? null
-                  : () {
-                      setState(() {
-                        if (isExpanded) {
-                          _expandedEdges.remove(edgeKey);
-                        } else {
-                          _expandedEdges.add(edgeKey);
-                        }
-                      });
-                    },
-              borderRadius: BorderRadius.circular(3),
-              child: Padding(
-                padding: const EdgeInsets.all(2),
-                child: Icon(
-                  isExpanded ? Icons.expand_more : Icons.chevron_right,
-                  size: 13,
-                  color: InspectorTheme.textDim,
-                ),
-              ),
-            ),
-            const SizedBox(width: 2),
-            if (isCycle)
-              _label('↻ cycle', InspectorTheme.warning)
-            else
+        wrapHover(
+          Row(
+            children: [
+              _connector(),
               InkWell(
-                onTap: () {
-                  widget.onNavigate(targetIdx);
-                },
-                borderRadius: BorderRadius.circular(3),
+                onTap: depth == 0
+                    ? null
+                    : () {
+                        setState(() {
+                          if (isExpanded) {
+                            _expandedEdges.remove(edgeKey);
+                          } else {
+                            _expandedEdges.add(edgeKey);
+                          }
+                        });
+                      },
+                borderRadius: BorderRadius.circular(4),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 2,
-                    vertical: 1,
+                    vertical: 2,
                   ),
-                  child: _label(
-                    '${target.variableName} (${target.nativeType})',
-                    InspectorTheme.success,
+                  child: Icon(
+                    isExpanded
+                        ? Icons.keyboard_arrow_down
+                        : Icons.keyboard_arrow_right,
+                    size: 16,
+                    color: depth == 0
+                        ? InspectorTheme.textDim.withValues(alpha: 0.3)
+                        : InspectorTheme.textDim,
                   ),
                 ),
               ),
-          ],
+              const SizedBox(width: 4),
+              Text(field.name, style: _fieldStyle),
+              _arrow(),
+              if (isCycle)
+                Row(
+                  children: [
+                    Icon(Icons.loop, size: 14, color: InspectorTheme.warning),
+                    const SizedBox(width: 4),
+                    _label('Cycle', InspectorTheme.warning),
+                  ],
+                )
+              else
+                Row(
+                  children: [
+                    InkWell(
+                      onTap: () {
+                        widget.onNavigate(targetIdx);
+                      },
+                      borderRadius: BorderRadius.circular(4),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 2,
+                        ),
+                        child: Text(
+                          '${target.variableName} (${target.nativeType})',
+                          style: InspectorTheme.monoSmall.copyWith(
+                            color: InspectorTheme.success,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (target.hasFields) ...[
+                      const SizedBox(width: 4),
+                      if (_hasPrimitiveData(target))
+                        Text(
+                          _primitiveSummary(target),
+                          style: InspectorTheme.monoSmall.copyWith(
+                            fontSize: 11,
+                            color: InspectorTheme.accent,
+                          ),
+                        )
+                      else
+                        Text(
+                          _fieldSummary(target),
+                          style: InspectorTheme.monoSmall.copyWith(
+                            fontSize: 10,
+                            color: InspectorTheme.textDim.withValues(
+                              alpha: 0.7,
+                            ),
+                          ),
+                        ),
+                    ],
+                    const SizedBox(width: 4),
+                    InkWell(
+                      onTap: () {
+                        Clipboard.setData(
+                          ClipboardData(text: target.addressHex),
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(4),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Icon(
+                          Icons.copy,
+                          size: 12,
+                          color: InspectorTheme.textDim.withValues(alpha: 0.8),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
         ),
         if (isExpanded && !isCycle)
           Padding(
-            padding: const EdgeInsets.only(left: 20),
+            padding: const EdgeInsets.only(top: 6),
             child: _buildNode(target, Set.of(visited), depth + 1),
           ),
       ],
@@ -291,14 +485,15 @@ class _ObjectGraphState extends State<ObjectGraph> {
 
     return InkWell(
       onTap: idx >= 0 ? () => widget.onNavigate(idx) : null,
-      borderRadius: BorderRadius.circular(4),
+      borderRadius: BorderRadius.circular(6),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        margin: const EdgeInsets.symmetric(vertical: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          color: InspectorTheme.surfaceLight,
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: InspectorTheme.border),
+          color: InspectorTheme.surfaceLight.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            color: InspectorTheme.border.withValues(alpha: 0.3),
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -308,14 +503,18 @@ class _ObjectGraphState extends State<ObjectGraph> {
               style: InspectorTheme.monoSmall.copyWith(
                 color: InspectorTheme.accent,
                 fontSize: 12,
+                fontWeight: FontWeight.w600,
               ),
             ),
-            const SizedBox(width: 6),
+            const SizedBox(width: 8),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
                 color: InspectorTheme.background,
-                borderRadius: BorderRadius.circular(3),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(
+                  color: InspectorTheme.border.withValues(alpha: 0.2),
+                ),
               ),
               child: Text(
                 p.nativeType,
@@ -323,16 +522,70 @@ class _ObjectGraphState extends State<ObjectGraph> {
               ),
             ),
             if (p.hasFields) ...[
-              const SizedBox(width: 6),
-              Text(
-                _fieldSummary(p),
-                style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
-              ),
+              const SizedBox(width: 8),
+              if (_hasPrimitiveData(p))
+                Text(
+                  _primitiveSummary(p),
+                  style: InspectorTheme.monoSmall.copyWith(
+                    fontSize: 11,
+                    color: InspectorTheme.accent,
+                  ),
+                )
+              else
+                Text(
+                  _fieldSummary(p),
+                  style: InspectorTheme.monoSmall.copyWith(
+                    fontSize: 10,
+                    color: InspectorTheme.textDim.withValues(alpha: 0.7),
+                  ),
+                ),
             ],
+            const SizedBox(width: 4),
+            InkWell(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: p.addressHex));
+              },
+              borderRadius: BorderRadius.circular(4),
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(
+                  Icons.copy,
+                  size: 12,
+                  color: InspectorTheme.textDim.withValues(alpha: 0.8),
+                ),
+              ),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  bool _hasPrimitiveData(PointerData p) {
+    if (!p.hasRawBytes) return false;
+    final primitives = p.fields
+        .where((f) => !f.isPointer && !f.isArray && !f.isStruct && !f.isPadding)
+        .toList();
+    if (primitives.isEmpty) return false;
+    return primitives.length <= 2; // Only show if it's a small wrapper struct
+  }
+
+  String _primitiveSummary(PointerData p) {
+    final primitives = p.fields
+        .where((f) => !f.isPointer && !f.isArray && !f.isStruct && !f.isPadding)
+        .toList();
+    final parts = <String>[];
+    for (final f in primitives.take(2)) {
+      if (f.offset + f.size <= p.rawBytes!.length) {
+        final bytes = p.rawBytes!.sublist(f.offset, f.offset + f.size);
+        int val = 0;
+        for (int i = bytes.length - 1; i >= 0; i--) {
+          val = (val << 8) | bytes[i];
+        }
+        parts.add('${f.name}: $val');
+      }
+    }
+    return '[${parts.join(', ')}]';
   }
 
   String _fieldSummary(PointerData p) {
@@ -343,14 +596,20 @@ class _ObjectGraphState extends State<ObjectGraph> {
     return '[${nonPtrFields.map((f) => f.name).join(', ')}]';
   }
 
-  Widget _connector() => Padding(
-    padding: const EdgeInsets.only(right: 4),
-    child: Text('├─', style: _connStyle),
+  Widget _connector() => Container(
+    width: 14,
+    height: 1.5,
+    margin: const EdgeInsets.only(right: 8),
+    color: InspectorTheme.border.withValues(alpha: 0.5),
   );
 
   Widget _arrow() => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 4),
-    child: Text('──→', style: _connStyle),
+    padding: const EdgeInsets.symmetric(horizontal: 8),
+    child: Icon(
+      Icons.arrow_forward_rounded,
+      size: 14,
+      color: InspectorTheme.border.withValues(alpha: 0.6),
+    ),
   );
 
   Widget _label(String text, Color color) => Text(
@@ -363,12 +622,8 @@ class _ObjectGraphState extends State<ObjectGraph> {
   );
 
   static final _fieldStyle = InspectorTheme.monoSmall.copyWith(
-    color: InspectorTheme.accent,
+    color: InspectorTheme.text.withValues(alpha: 0.9),
     fontSize: 11,
-  );
-
-  static final _connStyle = InspectorTheme.monoSmall.copyWith(
-    color: InspectorTheme.border,
-    fontSize: 11,
+    fontWeight: FontWeight.w500,
   );
 }

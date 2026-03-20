@@ -150,10 +150,40 @@ class _PointerSidebarState extends State<PointerSidebar> {
           style: InspectorTheme.monoSmall.copyWith(fontSize: 11),
           decoration: InputDecoration(
             hintText: 'Filter pointers...',
-            hintStyle: InspectorTheme.monoSmall.copyWith(fontSize: 11),
-            prefixIcon: const Icon(Icons.search, size: 14),
+            hintStyle: InspectorTheme.monoSmall.copyWith(
+              fontSize: 11,
+              color: InspectorTheme.textDim.withValues(alpha: 0.5),
+            ),
+            prefixIcon: Icon(
+              Icons.search,
+              size: 14,
+              color: InspectorTheme.textDim,
+            ),
             isDense: true,
-            contentPadding: const EdgeInsets.symmetric(vertical: 0),
+            contentPadding: const EdgeInsets.symmetric(
+              vertical: 8,
+              horizontal: 12,
+            ),
+            filled: true,
+            fillColor: InspectorTheme.surfaceLight.withValues(alpha: 0.3),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(
+                color: InspectorTheme.border.withValues(alpha: 0.5),
+              ),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(
+                color: InspectorTheme.border.withValues(alpha: 0.5),
+              ),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: BorderSide(
+                color: InspectorTheme.accent.withValues(alpha: 0.5),
+              ),
+            ),
           ),
         ),
       ),
@@ -172,14 +202,27 @@ class _PointerSidebarState extends State<PointerSidebar> {
             children: [
               for (final value in _RelationFilter.values)
                 ChoiceChip(
-                  label: Text(
-                    value.label,
-                    style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
+                  label: Text(value.label),
+                  labelStyle: InspectorTheme.monoSmall.copyWith(
+                    fontSize: 10,
+                    color: _relationFilter == value
+                        ? InspectorTheme.accent
+                        : InspectorTheme.textDim,
                   ),
                   selected: _relationFilter == value,
                   onSelected: (_) => setState(() => _relationFilter = value),
                   visualDensity: VisualDensity.compact,
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  showCheckmark: false,
+                  selectedColor: InspectorTheme.accent.withValues(alpha: 0.15),
+                  backgroundColor: InspectorTheme.surfaceLight.withValues(
+                    alpha: 0.3,
+                  ),
+                  side: BorderSide(
+                    color: _relationFilter == value
+                        ? InspectorTheme.accent.withValues(alpha: 0.4)
+                        : InspectorTheme.border.withValues(alpha: 0.5),
+                  ),
                 ),
             ],
           ),
@@ -192,6 +235,11 @@ class _PointerSidebarState extends State<PointerSidebar> {
                   value: _groupByGraph,
                   visualDensity: VisualDensity.compact,
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  activeColor: InspectorTheme.accent,
+                  checkColor: InspectorTheme.background,
+                  side: BorderSide(
+                    color: InspectorTheme.textDim.withValues(alpha: 0.5),
+                  ),
                   onChanged: (v) => setState(() => _groupByGraph = v ?? true),
                 ),
               ),
@@ -270,8 +318,7 @@ class _PointerSidebarState extends State<PointerSidebar> {
       padding: const EdgeInsets.symmetric(horizontal: 8),
       children: [
         for (final cat in order)
-          if (groups.containsKey(cat))
-            _section(cat, groups[cat]!, relation),
+          if (groups.containsKey(cat)) _section(cat, groups[cat]!, relation),
       ],
     );
   }
@@ -285,8 +332,13 @@ class _PointerSidebarState extends State<PointerSidebar> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+        Container(
+          margin: const EdgeInsets.only(top: 12, bottom: 4),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          decoration: BoxDecoration(
+            color: InspectorTheme.surfaceLight.withValues(alpha: 0.3),
+            borderRadius: BorderRadius.circular(4),
+          ),
           child: Row(
             children: [
               const Icon(
@@ -351,7 +403,10 @@ class _PointerSidebarState extends State<PointerSidebar> {
                 Text(label, style: InspectorTheme.label.copyWith(fontSize: 10)),
                 const SizedBox(width: 4),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 1,
+                  ),
                   decoration: BoxDecoration(
                     color: InspectorTheme.surfaceLight,
                     borderRadius: BorderRadius.circular(8),
@@ -394,16 +449,21 @@ class _PointerSidebarState extends State<PointerSidebar> {
               ? InspectorTheme.accent.withValues(alpha: 0.1)
               : Colors.transparent,
           borderRadius: BorderRadius.circular(4),
-          border: selected
-              ? Border.all(color: InspectorTheme.accent.withValues(alpha: 0.3))
-              : null,
+          border: Border.all(
+            color: selected
+                ? InspectorTheme.accent.withValues(alpha: 0.3)
+                : Colors.transparent,
+          ),
         ),
         child: Row(
           children: [
             Container(
               width: 6,
               height: 6,
-              decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: dotColor,
+              ),
             ),
             const SizedBox(width: 8),
             Expanded(
@@ -451,20 +511,16 @@ class _PointerSidebarState extends State<PointerSidebar> {
       ),
       child: Text(
         text,
-        style: InspectorTheme.monoSmall.copyWith(
-          fontSize: 8.5,
-          color: color,
-        ),
+        style: InspectorTheme.monoSmall.copyWith(fontSize: 8.5, color: color),
       ),
     );
   }
 
   bool _passesRelationFilter(int index, _RelationView relation) {
-    final inCount = relation.inCount[index] ?? 0;
     return switch (_relationFilter) {
       _RelationFilter.all => true,
-      _RelationFilter.roots => inCount == 0,
-      _RelationFilter.referenced => inCount > 0,
+      _RelationFilter.roots => relation.pseudoRoots.contains(index),
+      _RelationFilter.referenced => (relation.inCount[index] ?? 0) > 0,
       _RelationFilter.cyclic => relation.cyclic.contains(index),
     };
   }
@@ -503,12 +559,36 @@ class _PointerSidebarState extends State<PointerSidebar> {
       for (int i = 0; i < pointers.length; i++) i: outNeighbors[i]!.length,
     };
     final cyclic = _findCyclicNodes(outNeighbors, pointers.length);
-    final componentByIndex = _connectedComponents(outNeighbors, pointers.length);
+    final componentByIndex = _connectedComponents(
+      outNeighbors,
+      pointers.length,
+    );
+
+    final pseudoRoots = <int>{};
+    final componentHasRoot = <int>{};
+
+    for (int i = 0; i < pointers.length; i++) {
+      if ((inCount[i] ?? 0) == 0) {
+        pseudoRoots.add(i);
+        final cid = componentByIndex[i];
+        if (cid != null) componentHasRoot.add(cid);
+      }
+    }
+
+    for (int i = 0; i < pointers.length; i++) {
+      final cid = componentByIndex[i];
+      if (cid != null && !componentHasRoot.contains(cid)) {
+        pseudoRoots.add(i);
+        componentHasRoot.add(cid);
+      }
+    }
+
     return _RelationView(
       inCount: inCount,
       outCount: outCount,
       cyclic: cyclic,
       componentByIndex: componentByIndex,
+      pseudoRoots: pseudoRoots,
     );
   }
 
@@ -556,7 +636,10 @@ class _PointerSidebarState extends State<PointerSidebar> {
     return cyclic;
   }
 
-  Map<int, int> _connectedComponents(Map<int, Set<int>> outNeighbors, int count) {
+  Map<int, int> _connectedComponents(
+    Map<int, Set<int>> outNeighbors,
+    int count,
+  ) {
     final undirected = <int, Set<int>>{
       for (int i = 0; i < count; i++) i: <int>{},
     };
@@ -649,10 +732,12 @@ class _RelationView {
     required this.outCount,
     required this.cyclic,
     required this.componentByIndex,
+    required this.pseudoRoots,
   });
 
   final Map<int, int> inCount;
   final Map<int, int> outCount;
   final Set<int> cyclic;
   final Map<int, int> componentByIndex;
+  final Set<int> pseudoRoots;
 }

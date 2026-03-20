@@ -178,8 +178,17 @@ class _ObjectGraphState extends State<ObjectGraph> {
   }
 
   Widget _buildGraph() {
-    final visited = <int>{};
-    return _buildNode(widget.rootPointer, visited, 0);
+    if (widget.selectionNotifier == null) {
+      final visited = <int>{};
+      return _buildNode(widget.rootPointer, visited, 0);
+    }
+    return AnimatedBuilder(
+      animation: widget.selectionNotifier!,
+      builder: (context, child) {
+        final visited = <int>{};
+        return _buildNode(widget.rootPointer, visited, 0);
+      },
+    );
   }
 
   Widget _buildNode(PointerData pointer, Set<int> visited, int depth) {
@@ -311,6 +320,8 @@ class _ObjectGraphState extends State<ObjectGraph> {
     int? targetAddress = _resolveTargetAddress(parent, field);
 
     final isRoot = parent.address == widget.rootPointer.address;
+    final isHovered =
+        isRoot && widget.selectionNotifier?.hoverRange?.offset == field.offset;
 
     Widget wrapHover(Widget child) {
       if (!isRoot || widget.selectionNotifier == null) return child;
@@ -321,7 +332,18 @@ class _ObjectGraphState extends State<ObjectGraph> {
           InspectorTheme.accent.withValues(alpha: 0.3),
         ),
         onExit: (_) => widget.selectionNotifier!.clearHover(),
-        child: child,
+        child: isHovered
+            ? Container(
+                decoration: BoxDecoration(
+                  color: InspectorTheme.accent.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: InspectorTheme.accent.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: child,
+              )
+            : child,
       );
     }
 
@@ -407,67 +429,7 @@ class _ObjectGraphState extends State<ObjectGraph> {
                   ],
                 )
               else
-                Row(
-                  children: [
-                    InkWell(
-                      onTap: () {
-                        widget.onNavigate(targetIdx);
-                      },
-                      borderRadius: BorderRadius.circular(4),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 4,
-                          vertical: 2,
-                        ),
-                        child: Text(
-                          '${target.variableName} (${target.nativeType})',
-                          style: InspectorTheme.monoSmall.copyWith(
-                            color: InspectorTheme.success,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (target.hasFields) ...[
-                      const SizedBox(width: 4),
-                      if (_hasPrimitiveData(target))
-                        Text(
-                          _primitiveSummary(target),
-                          style: InspectorTheme.monoSmall.copyWith(
-                            fontSize: 11,
-                            color: InspectorTheme.accent,
-                          ),
-                        )
-                      else
-                        Text(
-                          _fieldSummary(target),
-                          style: InspectorTheme.monoSmall.copyWith(
-                            fontSize: 10,
-                            color: InspectorTheme.textDim.withValues(
-                              alpha: 0.7,
-                            ),
-                          ),
-                        ),
-                    ],
-                    const SizedBox(width: 4),
-                    InkWell(
-                      onTap: () {
-                        Clipboard.setData(
-                          ClipboardData(text: target.addressHex),
-                        );
-                      },
-                      borderRadius: BorderRadius.circular(4),
-                      child: Padding(
-                        padding: const EdgeInsets.all(4),
-                        child: Icon(
-                          Icons.copy,
-                          size: 12,
-                          color: InspectorTheme.textDim.withValues(alpha: 0.8),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                _targetBubbleWidget(target, targetIdx, isHovered: isHovered),
             ],
           ),
         ),
@@ -477,6 +439,104 @@ class _ObjectGraphState extends State<ObjectGraph> {
             child: _buildNode(target, Set.of(visited), depth + 1),
           ),
       ],
+    );
+  }
+
+  Widget _targetBubbleWidget(
+    PointerData target,
+    int targetIdx, {
+    bool isHovered = false,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: isHovered
+            ? InspectorTheme.accent.withValues(alpha: 0.25)
+            : InspectorTheme.surfaceLight.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(
+          color: isHovered
+              ? InspectorTheme.accent.withValues(alpha: 0.6)
+              : InspectorTheme.border.withValues(alpha: 0.4),
+        ),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => widget.onNavigate(targetIdx),
+          borderRadius: BorderRadius.circular(4),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  target.variableName,
+                  style: InspectorTheme.monoSmall.copyWith(
+                    color: InspectorTheme.success,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 1,
+                  ),
+                  decoration: BoxDecoration(
+                    color: InspectorTheme.background.withValues(alpha: 0.5),
+                    borderRadius: BorderRadius.circular(3),
+                    border: Border.all(
+                      color: InspectorTheme.border.withValues(alpha: 0.15),
+                    ),
+                  ),
+                  child: Text(
+                    target.nativeType,
+                    style: InspectorTheme.monoSmall.copyWith(
+                      color: InspectorTheme.textDim,
+                      fontSize: 9,
+                    ),
+                  ),
+                ),
+                if (target.hasFields) ...[
+                  const SizedBox(width: 6),
+                  if (_hasPrimitiveData(target))
+                    Text(
+                      _primitiveSummary(target),
+                      style: InspectorTheme.monoSmall.copyWith(
+                        fontSize: 10,
+                        color: InspectorTheme.accent,
+                      ),
+                    )
+                  else
+                    Text(
+                      _fieldSummary(target),
+                      style: InspectorTheme.monoSmall.copyWith(
+                        fontSize: 10,
+                        color: InspectorTheme.textDim.withValues(alpha: 0.7),
+                      ),
+                    ),
+                ],
+                const SizedBox(width: 6),
+                InkWell(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: target.addressHex));
+                  },
+                  borderRadius: BorderRadius.circular(4),
+                  child: Padding(
+                    padding: const EdgeInsets.all(2),
+                    child: Icon(
+                      Icons.copy,
+                      size: 12,
+                      color: InspectorTheme.textDim.withValues(alpha: 0.8),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 

@@ -8,6 +8,7 @@ import '../models/pointer_data.dart';
 import '../models/selection_notifier.dart';
 import '../theme.dart';
 import 'byte_interpretation.dart';
+import 'context_panel.dart';
 import 'field_tree.dart';
 import 'hex_dump.dart';
 import 'layout_diagram.dart';
@@ -18,6 +19,7 @@ class DetailPanel extends StatefulWidget {
     super.key,
     required this.pointer,
     required this.allPointers,
+    required this.snapshotHistory,
     required this.onNavigate,
     this.canGoBack = false,
     this.onGoBack,
@@ -27,6 +29,7 @@ class DetailPanel extends StatefulWidget {
 
   final PointerData pointer;
   final List<PointerData> allPointers;
+  final List<MemorySnapshot> snapshotHistory;
   final ValueChanged<int> onNavigate;
   final bool canGoBack;
   final VoidCallback? onGoBack;
@@ -94,13 +97,42 @@ class _DetailPanelState extends State<DetailPanel> {
                     onLoadMore: widget.canLoadMore ? widget.onLoadMore : null,
                   ),
                 ],
-                // Object graph (for structs with nested structures)
+                // Object graph + Context panel (side by side)
                 if (d.hasInterestingStructure)
-                  ObjectGraph(
-                    rootPointer: d,
-                    allPointers: widget.allPointers,
-                    onNavigate: widget.onNavigate,
-                    selectionNotifier: _selectionNotifier,
+                  SizedBox(
+                    height: 350,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: ObjectGraph(
+                            rootPointer: d,
+                            allPointers: widget.allPointers,
+                            onNavigate: widget.onNavigate,
+                            selectionNotifier: _selectionNotifier,
+                          ),
+                        ),
+                        SizedBox(
+                          width: 280,
+                          child: ContextPanel(
+                            pointer: d,
+                            allPointers: widget.allPointers,
+                            snapshotHistory: widget.snapshotHistory,
+                            onNavigate: widget.onNavigate,
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  SizedBox(
+                    height: 250,
+                    child: ContextPanel(
+                      pointer: d,
+                      allPointers: widget.allPointers,
+                      snapshotHistory: widget.snapshotHistory,
+                      onNavigate: widget.onNavigate,
+                    ),
                   ),
               ],
             ),

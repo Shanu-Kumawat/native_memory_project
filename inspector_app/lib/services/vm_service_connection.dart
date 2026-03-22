@@ -35,6 +35,17 @@ class VmServiceConnection {
   bool get hasEnrichedProtocol => _hasEnrichedProtocol;
   bool get hasReadMemoryRpc => _hasReadMemoryRpc;
 
+  /// Resume the target isolate (e.g. advance past a debugger() breakpoint).
+  Future<void> resumeTarget() async {
+    if (_service == null || _isolateId == null) return;
+    try {
+      await _service!.resume(_isolateId!);
+      _log('Resumed target isolate');
+    } catch (e) {
+      _log('Resume failed: $e');
+    }
+  }
+
   void _log(String message) {
     onLog?.call(message);
     // ignore: avoid_print
@@ -258,13 +269,15 @@ class VmServiceConnection {
         _log('Stack has ${frames.length} frames');
 
         final localCandidates =
-            <({
-              String name,
-              InstanceRef ref,
-              String? declaredTypeName,
-              int frameIndex,
-              int? declarationTokenPos,
-            })>[];
+            <
+              ({
+                String name,
+                InstanceRef ref,
+                String? declaredTypeName,
+                int frameIndex,
+                int? declarationTokenPos,
+              })
+            >[];
 
         for (int fi = 0; fi < frames.length; fi++) {
           final frame = frames[fi];

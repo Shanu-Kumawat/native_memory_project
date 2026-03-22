@@ -25,6 +25,14 @@ class NativeMemoryInspectorApp extends StatelessWidget {
       title: 'Native Memory Inspector',
       debugShowCheckedModeBanner: false,
       theme: InspectorTheme.themeData,
+      builder: (context, child) {
+        return MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const TextScaler.linear(1.15)),
+          child: child!,
+        );
+      },
       home: const InspectorPage(),
     );
   }
@@ -87,12 +95,31 @@ class _InspectorPageState extends State<InspectorPage> {
 
   Future<void> _scanForPointers() async {
     final pointers = await _vmConnection.findPointers();
-    _updateState(
-      (s) => s.copyWith(
+    _updateState((s) {
+      // Append current state as a snapshot (cap at 10)
+      final history = List<models.MemorySnapshot>.from(s.snapshotHistory);
+      if (s.pointers.isNotEmpty) {
+        history.add(
+          models.MemorySnapshot(
+            pointers: s.pointers,
+            timestamp: DateTime.now(),
+          ),
+        );
+        if (history.length > 10) history.removeAt(0);
+      }
+      return s.copyWith(
+        snapshotHistory: history,
         pointers: pointers,
         selectedPointerIndex: pointers.isNotEmpty ? 0 : -1,
-      ),
-    );
+      );
+    });
+  }
+
+  Future<void> _resumeAndRescan() async {
+    await _vmConnection.resumeTarget();
+    // Brief delay to let the target app advance to next breakpoint
+    await Future.delayed(const Duration(milliseconds: 500));
+    await _scanForPointers();
   }
 
   Future<void> _loadMoreForSelectedPointer() async {
@@ -169,6 +196,7 @@ class _InspectorPageState extends State<InspectorPage> {
                     onConnect: _connect,
                     onDisconnect: _disconnect,
                     onRescan: _scanForPointers,
+                    onResumeTarget: _resumeAndRescan,
                     isConnecting:
                         _state.connectionState ==
                         models.ConnectionState.connecting,
@@ -187,6 +215,7 @@ class _InspectorPageState extends State<InspectorPage> {
                           key: ValueKey(_state.selectedPointerIndex),
                           pointer: _state.selectedPointer!,
                           allPointers: _state.pointers,
+                          snapshotHistory: _state.snapshotHistory,
                           onNavigate: _selectPointer,
                           canGoBack: _state.canGoBack,
                           onGoBack: _navigateBack,

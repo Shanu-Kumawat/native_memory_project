@@ -1,0 +1,44 @@
+name: Cross-Platform Memory Read Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build memory read test
+        run: gcc -pthread -o tests/test_memory_read tests/test_memory_read.c
+
+      - name: Run memory read test
+        run: ./tests/test_memory_read
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build memory read test
+        run: clang -pthread -o tests/test_memory_read tests/test_memory_read.c
+
+      - name: Run memory read test
+        run: ./tests/test_memory_read
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build memory read test
+        run: cl tests\test_memory_read.c /Fe:tests\test_memory_read.exe
+
+      - name: Run memory read test
+        run: tests\test_memory_read.exe

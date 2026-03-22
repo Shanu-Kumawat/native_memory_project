@@ -15,6 +15,7 @@ class PointerSidebar extends StatefulWidget {
     required this.onConnect,
     required this.onDisconnect,
     required this.onRescan,
+    required this.onResumeTarget,
     this.isConnecting = false,
     this.errorMessage,
   });
@@ -26,6 +27,7 @@ class PointerSidebar extends StatefulWidget {
   final ValueChanged<String> onConnect;
   final VoidCallback onDisconnect;
   final VoidCallback onRescan;
+  final VoidCallback onResumeTarget;
   final bool isConnecting;
   final String? errorMessage;
 
@@ -687,6 +689,24 @@ class _PointerSidebarState extends State<PointerSidebar> {
                 label: Text(
                   'Rescan',
                   style: InspectorTheme.monoSmall.copyWith(fontSize: 10),
+                ),
+              ),
+            ),
+          ),
+          SizedBox(
+            height: 28,
+            child: TextButton.icon(
+              onPressed: widget.onResumeTarget,
+              icon: Icon(
+                Icons.play_arrow,
+                size: 12,
+                color: InspectorTheme.success,
+              ),
+              label: Text(
+                'Resume',
+                style: InspectorTheme.monoSmall.copyWith(
+                  fontSize: 10,
+                  color: InspectorTheme.success,
                 ),
               ),
             ),

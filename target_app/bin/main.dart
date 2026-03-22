@@ -1,14 +1,7 @@
 // Target program for demonstrating native pointer inspection.
-//
-// Run with:
-//   dart run --enable-vm-service bin/main.dart
-//
-// The VM Service URL will be printed to stderr.
-// Connect the Native Memory Inspector to that URL.
 
 import 'dart:developer';
 import 'dart:ffi';
-import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
@@ -365,14 +358,73 @@ void main() {
   print('  (reading this should produce a clean error, no crash)');
   print('');
 
-  // ── Pause at breakpoint ──
-  print('Pausing at debugger() breakpoint...');
-  print('Connect the inspector now, then press Enter here to continue.\n');
+  // ── Phase 1: Initial inspection ──
+  print('Phase 1: Pausing for initial inspection...');
+  print('Connect the inspector, Rescan, then click Resume Target.\n');
 
-  debugger(message: 'Inspect native pointers now');
+  debugger(message: 'Phase 1 — Inspect initial state');
 
-  print('Debugger resumed. Press Enter to free memory and exit...');
-  stdin.readLineSync();
+  // ── Phase 2: Mutate memory to demonstrate Δ Changes ──
+  print('Phase 2: Mutating memory...');
+
+  // Mutate scalar values
+  treeRoot.ref.id = 99; // id: 1 → 99
+  myStruct.ref.value = 9.81; // value: 3.14 → 9.81
+  node1.ref.data = 777; // data: 100 → 777
+
+  // Mutate pointer topology — treeLeft gains a new right child
+  // Before: treeLeft.right = null
+  // After:  treeLeft.right = treeRightRight
+  // This creates a new inbound reference to treeRightRight!
+  treeLeft.ref.right = treeRightRight;
+
+  // Mutate buffer contents
+  for (int i = 0; i < 8; i++) {
+    bufData[i] = 0xFF - i; // 255, 254, 253, ... (reversed pattern)
+  }
+  buffer.ref.length = 99; // length: 8 → 99
+
+  print('  treeRoot.id:    1 → ${treeRoot.ref.id}');
+  print('  myStruct.value: 3.14 → ${myStruct.ref.value}');
+  print('  node1.data:     100 → ${node1.ref.data}');
+  print(
+      '  treeLeft.right: null → 0x${treeLeft.ref.right.address.toRadixString(16)}');
+  print('  buffer.length:  8 → ${buffer.ref.length}');
+  print('');
+  print('Phase 2: Pausing — Rescan in the inspector to see Δ Changes.\n');
+
+  debugger(message: 'Phase 2 — Rescan to see memory diffs');
+
+  // ── Phase 3: Partial revert + new mutations ──
+  print('\nPhase 3: Partial revert + new mutations...');
+
+  // Revert some Phase 2 changes
+  treeRoot.ref.id = 1; // id: 99 → 1 (back to original!)
+  buffer.ref.length = 8; // length: 99 → 8 (reverted)
+
+  // New mutations on previously-unchanged fields
+  point.ref.x = 100.0; // x: 1.5 → 100.0
+  point.ref.y = 200.0; // y: 2.7 → 200.0
+  node2.ref.data = 999; // data: 200 → 999
+
+  // Mutate raw buffer bytes to demonstrate raw byte diff
+  bufData[0] = 0xAA; // was 0xFF from Phase 2
+  bufData[1] = 0xBB; // was 0xFE from Phase 2
+  bufData[4] = 0x00; // was 0xFB from Phase 2
+
+  print('  treeRoot.id:    99 → ${treeRoot.ref.id} (reverted!)');
+  print('  buffer.length:  99 → ${buffer.ref.length} (reverted!)');
+  print('  point.x:        1.5 → ${point.ref.x}');
+  print('  point.y:        2.7 → ${point.ref.y}');
+  print('  node2.data:     200 → ${node2.ref.data}');
+  print('  bufData[0..4]:  FF→AA, FE→BB, FB→00');
+  print(
+      '\nPhase 3: Pausing — Rescan to see all changes across timeline.\n');
+
+  debugger(message: 'Phase 3 — Compare across timeline');
+
+  // When resumed, cleanup and exit
+  print('\nDone. Freeing memory and exiting...');
 
   // Cleanup
   calloc.free(buffer);

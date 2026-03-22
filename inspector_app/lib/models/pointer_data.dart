@@ -138,11 +138,20 @@ class PointerData {
 /// Connection state for the VM Service.
 enum ConnectionState { disconnected, connecting, connected, error }
 
+/// A timestamped snapshot of all pointer states at a given scan.
+class MemorySnapshot {
+  final List<PointerData> pointers;
+  final DateTime timestamp;
+
+  const MemorySnapshot({required this.pointers, required this.timestamp});
+}
+
 /// Overall state of the inspector.
 class InspectorState {
   final ConnectionState connectionState;
   final String? vmServiceUri;
   final List<PointerData> pointers;
+  final List<MemorySnapshot> snapshotHistory;
   final String? errorMessage;
   final String? vmName;
   final String? vmVersion;
@@ -153,6 +162,7 @@ class InspectorState {
     this.connectionState = ConnectionState.disconnected,
     this.vmServiceUri,
     this.pointers = const [],
+    this.snapshotHistory = const [],
     this.errorMessage,
     this.vmName,
     this.vmVersion,
@@ -177,6 +187,7 @@ class InspectorState {
     ConnectionState? connectionState,
     String? vmServiceUri,
     List<PointerData>? pointers,
+    List<MemorySnapshot>? snapshotHistory,
     String? errorMessage,
     String? vmName,
     String? vmVersion,
@@ -187,6 +198,7 @@ class InspectorState {
       connectionState: connectionState ?? this.connectionState,
       vmServiceUri: vmServiceUri ?? this.vmServiceUri,
       pointers: pointers ?? this.pointers,
+      snapshotHistory: snapshotHistory ?? this.snapshotHistory,
       errorMessage: errorMessage,
       vmName: vmName ?? this.vmName,
       vmVersion: vmVersion ?? this.vmVersion,

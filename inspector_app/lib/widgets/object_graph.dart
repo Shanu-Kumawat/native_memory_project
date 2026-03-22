@@ -168,9 +168,11 @@ class _ObjectGraphState extends State<ObjectGraph> {
             ),
           ),
           if (_expanded)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: _buildGraph(),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: _buildGraph(),
+              ),
             ),
         ],
       ),

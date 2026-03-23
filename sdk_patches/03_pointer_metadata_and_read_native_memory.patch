@@ -153,17 +153,17 @@ index cda9becb14f..8eca8a16217 100644
 +
 +static const MethodParameter* const read_native_memory_params[] = {
 +    RUNNABLE_ISOLATE_PARAMETER,
-+    new UIntParameter("address", /*required=*/true),
-+    new UIntParameter("count", /*required=*/true),
++    new UInt64Parameter("address", /*required=*/true),
++    new UInt64Parameter("count", /*required=*/true),
 +    nullptr,
 +};
 +
 +static void ReadNativeMemory(Thread* thread, JSONStream* js) {
 +  USE(thread);
 +  const uint64_t address =
-+      UIntParameter::Parse(js->LookupParam("address"));
++      UInt64Parameter::Parse(js->LookupParam("address"));
 +  uint64_t count =
-+      UIntParameter::Parse(js->LookupParam("count"));
++      UInt64Parameter::Parse(js->LookupParam("count"));
 +
 +  // Clamp to 64KB max to prevent abuse.
 +  const uint64_t kMaxReadSize = 64 * 1024;

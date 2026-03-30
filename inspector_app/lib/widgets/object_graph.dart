@@ -244,10 +244,30 @@ class _ObjectGraphState extends State<ObjectGraph> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (final field in interestingFields)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: _buildEdge(field, pointer, visited, depth),
+                for (int i = 0; i < interestingFields.length; i++)
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Padding(
+                        padding: EdgeInsets.only(
+                          bottom: i == interestingFields.length - 1 ? 0 : 10,
+                        ),
+                        child: _buildEdge(
+                          interestingFields[i],
+                          pointer,
+                          visited,
+                          depth,
+                        ),
+                      ),
+                      if (i == interestingFields.length - 1)
+                        Positioned(
+                          left: -2,
+                          top: 15,
+                          bottom: -2,
+                          width: 4,
+                          child: Container(color: InspectorTheme.background),
+                        ),
+                    ],
                   ),
               ],
             ),
@@ -383,6 +403,10 @@ class _ObjectGraphState extends State<ObjectGraph> {
         '${parent.address}:${field.name}:${target.address.toRadixString(16)}';
     final isExpanded = depth == 0 || _expandedEdges.contains(edgeKey);
     final isCycle = visited.contains(target.address);
+    final hasExpandableFields = target.fields.any(
+      (f) => f.isPointer || f.isStruct || f.isArray,
+    );
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -390,35 +414,40 @@ class _ObjectGraphState extends State<ObjectGraph> {
           Row(
             children: [
               _connector(),
-              InkWell(
-                onTap: depth == 0
-                    ? null
-                    : () {
-                        setState(() {
-                          if (isExpanded) {
-                            _expandedEdges.remove(edgeKey);
-                          } else {
-                            _expandedEdges.add(edgeKey);
-                          }
-                        });
-                      },
-                borderRadius: BorderRadius.circular(4),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 2,
-                    vertical: 2,
+              if (hasExpandableFields && !isCycle)
+                InkWell(
+                  onTap: depth == 0
+                      ? null
+                      : () {
+                          setState(() {
+                            if (isExpanded) {
+                              _expandedEdges.remove(edgeKey);
+                            } else {
+                              _expandedEdges.add(edgeKey);
+                            }
+                          });
+                        },
+                  borderRadius: BorderRadius.circular(4),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 2,
+                      vertical: 2,
+                    ),
+                    child: Icon(
+                      isExpanded
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_right,
+                      size: 16,
+                      color: depth == 0
+                          ? InspectorTheme.textDim.withValues(alpha: 0.3)
+                          : InspectorTheme.textDim,
+                    ),
                   ),
-                  child: Icon(
-                    isExpanded
-                        ? Icons.keyboard_arrow_down
-                        : Icons.keyboard_arrow_right,
-                    size: 16,
-                    color: depth == 0
-                        ? InspectorTheme.textDim.withValues(alpha: 0.3)
-                        : InspectorTheme.textDim,
-                  ),
-                ),
-              ),
+                )
+              else
+                const SizedBox(
+                  width: 0,
+                ), // Removed padding to let text slide left
               const SizedBox(width: 4),
               Text(field.name, style: _fieldStyle),
               _arrow(),

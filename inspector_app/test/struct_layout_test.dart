@@ -221,6 +221,93 @@ void main() {
       expect(withArray.category, PointerCategory.advanced);
     });
 
+    test('advanced category for pointer-to-pointer primitive type', () {
+      final ptrToPtr = PointerData(
+        variableName: 'ptrToPtr',
+        nativeType: 'Pointer<Int32>',
+        address: 0x3100,
+        structSize: 8,
+        fields: [
+          StructField(
+            name: 'value',
+            typeName: 'Pointer<Int32>',
+            offset: 0,
+            size: 8,
+          ),
+        ],
+      );
+      expect(ptrToPtr.category, PointerCategory.advanced);
+    });
+
+    test('advanced category for buffer-like length + byte pointer layout', () {
+      final buffer = PointerData(
+        variableName: 'buffer',
+        nativeType: 'Buffer',
+        address: 0x3200,
+        structSize: 16,
+        fields: [
+          StructField(name: 'length', typeName: 'Int32', offset: 0, size: 4),
+          StructField(
+            name: 'data',
+            typeName: 'Pointer<Uint8>',
+            offset: 8,
+            size: 8,
+          ),
+        ],
+      );
+      expect(buffer.category, PointerCategory.advanced);
+    });
+
+    test('advanced category for multi-pointer graph node layout', () {
+      final biNode = PointerData(
+        variableName: 'treeRoot',
+        nativeType: 'BiNode',
+        address: 0x3300,
+        structSize: 32,
+        fields: [
+          StructField(name: 'id', typeName: 'Int32', offset: 0, size: 4),
+          StructField(
+            name: 'left',
+            typeName: 'Pointer<BiNode>',
+            offset: 8,
+            size: 8,
+          ),
+          StructField(
+            name: 'right',
+            typeName: 'Pointer<BiNode>',
+            offset: 16,
+            size: 8,
+          ),
+          StructField(
+            name: 'payload',
+            typeName: 'Pointer<Uint8>',
+            offset: 24,
+            size: 8,
+          ),
+        ],
+      );
+      expect(biNode.category, PointerCategory.advanced);
+    });
+
+    test('single pointer field struct remains struct category', () {
+      final node = PointerData(
+        variableName: 'node1',
+        nativeType: 'Node',
+        address: 0x3400,
+        structSize: 16,
+        fields: [
+          StructField(name: 'data', typeName: 'Int32', offset: 0, size: 4),
+          StructField(
+            name: 'next',
+            typeName: 'Pointer<Node>',
+            offset: 8,
+            size: 8,
+          ),
+        ],
+      );
+      expect(node.category, PointerCategory.struct);
+    });
+
     test('struct category for regular struct pointer', () {
       final myStruct = PointerData(
         variableName: 'myStruct',

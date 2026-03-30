@@ -106,13 +106,58 @@ class PointerData {
       return PointerCategory.union;
     }
 
-    if (fields.any((f) => f.isArray) ||
-        nativeType.contains('Buffer') ||
-        nativeType.contains('Array')) {
+    // Advanced classification is intentionally structure-based, not name-based.
+    // This avoids brittle string heuristics like nativeType.contains('Buffer').
+    if (_isAdvancedByStructure(realFields)) {
       return PointerCategory.advanced;
     }
     return PointerCategory.struct;
   }
+
+  bool _isAdvancedByStructure(List<StructField> realFields) {
+    // Explicit pointer-to-pointer primitive/native type, e.g. Pointer<Int32>.
+    if (nativeType.startsWith('Pointer<')) {
+      return true;
+    }
+
+    final pointerFields = realFields.where((f) => f.isPointer).toList();
+    final hasArrayField = realFields.any((f) => f.isArray);
+
+    if (hasArrayField) return true; // WithArray
+    if (pointerFields.length >= 2) return true; // BiNode-like graph nodes
+
+    // Buffer-like pattern: exactly one pointer field plus an integer
+    // count/length/size field used to interpret pointed memory.
+    final hasSizeLikeField = realFields.any(
+      (f) =>
+          _isIntegerType(f.typeName) &&
+          _sizeLikeFieldNames.contains(f.name.toLowerCase()),
+    );
+    final pointsToByteLike = pointerFields.any(
+      (f) =>
+          f.typeName.contains('Pointer<Uint8>') ||
+          f.typeName.contains('Pointer<Int8>') ||
+          f.typeName.contains('Pointer<Void>'),
+    );
+    if (pointerFields.length == 1 && hasSizeLikeField && pointsToByteLike) {
+      return true; // Buffer(length + Pointer<Uint8>)
+    }
+
+    return false;
+  }
+
+  static const _sizeLikeFieldNames = {'length', 'len', 'size', 'count'};
+
+  bool _isIntegerType(String typeName) =>
+      typeName == 'Int8' ||
+      typeName == 'Int16' ||
+      typeName == 'Int32' ||
+      typeName == 'Int64' ||
+      typeName == 'Uint8' ||
+      typeName == 'Uint16' ||
+      typeName == 'Uint32' ||
+      typeName == 'Uint64' ||
+      typeName == 'int';
 
   PointerData copyWith({
     String? variableName,

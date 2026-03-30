@@ -252,8 +252,9 @@ void main() {
     ..data = 22
     ..next = cycleA;
 
-  // Safety test pointer
+  // Safety test pointers
   final invalidPtr = Pointer<MyStruct>.fromAddress(0xDEADBEEF);
+  final nullPtr = Pointer<Point>.fromAddress(0);
 
   // ── Print info for manual verification ──
 
@@ -356,6 +357,8 @@ void main() {
   print('── Safety Tests ──');
   print('invalidPtr @ 0x${invalidPtr.address.toRadixString(16)}');
   print('  (reading this should produce a clean error, no crash)');
+  print('nullPtr @ 0x${nullPtr.address.toRadixString(16)}');
+  print('  (null pointer — should also produce a clean error)');
   print('');
 
   // ── Phase 1: Initial inspection ──
@@ -418,8 +421,7 @@ void main() {
   print('  point.y:        2.7 → ${point.ref.y}');
   print('  node2.data:     200 → ${node2.ref.data}');
   print('  bufData[0..4]:  FF→AA, FE→BB, FB→00');
-  print(
-      '\nPhase 3: Pausing — Rescan to see all changes across timeline.\n');
+  print('\nPhase 3: Pausing — Rescan to see all changes across timeline.\n');
 
   debugger(message: 'Phase 3 — Compare across timeline');
 
